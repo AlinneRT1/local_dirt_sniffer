@@ -1,0 +1,12 @@
+opencv-python-headless
+streamlit
+numpy
+Pillow
+pandas
+ultralytics
+matplotlib
+plotly
+pyjwt
+requests
+scipy
+ultralytics>=8.0.0
