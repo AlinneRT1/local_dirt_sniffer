@@ -87,7 +87,6 @@ SIZE_BINS = [
     ("J: 1000μm+ (0 pcs)", 1000, float("inf")),
 ]
 
-
 @st.cache_resource
 def load_model():
     """Load YOLO model on GPU"""
@@ -106,13 +105,11 @@ def load_model():
         st.error(f"❌ Error loading model: {e}")
         return None
 
-
 def get_size_bin(diameter_um):
     for label, lo, hi in SIZE_BINS:
         if lo <= diameter_um < hi:
             return label
     return "K"
-
 
 def calculate_particle_size_accurate(mask_array, calibration):
     """Edge detection sizing"""
@@ -140,7 +137,6 @@ def calculate_particle_size_accurate(mask_array, calibration):
         pass
 
     return None, "failed"
-
 
 def calculate_merged_particle_size(stitched_image, calibration):
     """Recalculate size on the complete stitched image using edge detection"""
@@ -171,7 +167,6 @@ def calculate_merged_particle_size(stitched_image, calibration):
         pass
 
     return None, "failed"
-
 
 def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
     """Stitch together tiles for a merged cut particle and recalculate size"""
@@ -224,7 +219,6 @@ def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
         }, seam_position
     except:
         return None, None, None
-
 
 def detect_particles_in_tiles(tile_files, tile_metadata, model):
     """Detect in all tiles using GPU acceleration"""
@@ -300,7 +294,6 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
     status.empty()
     return all_particles
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -318,10 +311,8 @@ if "tile_files" not in st.session_state:
 if "selected_particles" not in st.session_state:
     st.session_state.selected_particles = set()
 
-
 def push_undo():
     st.session_state.undo_stack.append(deepcopy(st.session_state.results))
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -417,18 +408,18 @@ with st.sidebar:
                     with st.expander("📊 What happened:"):
                         st.write(f"""
                         **Math Breakdown:**
-
+                        
                         Raw detections:           {len(raw_particles)}
                         - Duplicates removed:     -{stats['duplicates_removed']}
                         - Cut pairs merged:       -{len(merged_pairs)}
                         ─────────────────────────────────────
                         **FINAL COUNT:            {len(merged_particles)}**
-
+                        
                         **Details:**
                         - Seam particles identified: {num_at_seam}
                         - IOU threshold: 0.3 (30% overlap = duplicate)
                         - Seam margin: 30px from tile edge
-
+                        
                         **What this means:**
                         - Every duplicate in overlap zones was removed (kept highest confidence)
                         - Every cut particle found at seams was stitched together
@@ -448,6 +439,43 @@ with st.sidebar:
                 st.session_state.undo_stack = []
                 st.session_state.selected_particles = set()
                 st.success(f"Done!")
+
+    st.divider()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # FINAL SUMMARY (MOVED TO MAIN AREA)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    if st.session_state.results:
+        st.subheader("📈 Final Count Summary")
+
+        final_active = len([p for p in st.session_state.results if not p.get("deleted")])
+        final_deleted = len([p for p in st.session_state.results if p.get("deleted")])
+        total_processed = len(st.session_state.results)
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Processed", total_processed)
+        with col2:
+            st.metric("User Deleted", final_deleted)
+        with col3:
+            st.metric("Active for Export", final_active, delta=f"-{final_deleted}")
+
+        with st.expander("📋 Processing Breakdown", expanded=False):
+            st.write(f"""
+            **From Detection to Final Count:**
+            
+            1. **Raw detections:** Particles found in all tiles
+            2. **Duplicates removed:** Same particle in overlap zones (IOU > 0.3)
+            3. **Merged pairs:** Cut particles stitched together at seams
+            4. **User deletions:** Manually removed particles
+            5. **Final active:** Ready for export/analysis
+            
+            **Current Status:**
+            - Total after processing: {total_processed}
+            - User deleted: {final_deleted}
+            - **Active for export: {final_active}**
+            """)
 
     st.divider()
 
@@ -471,8 +499,7 @@ with st.sidebar:
             for p in st.session_state.results:
                 if not p.get("deleted"):
                     exported_count += 1
-                    status = "MERGED (stitched)" if p.get("merged") else (
-                        "AT_SEAM (check)" if p.get("at_seam") else "OK")
+                    status = "MERGED (stitched)" if p.get("merged") else ("AT_SEAM (check)" if p.get("at_seam") else "OK")
 
                     # If merged, try to get recalculated size
                     diameter_um = p.get("diameter_um")
@@ -484,8 +511,7 @@ with st.sidebar:
                             particle_key = f"{p.get('tile_filename')}_{p.get('x')}_{p.get('y')}"
 
                             if particle_key not in st.session_state.stitch_cache:
-                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files,
-                                                                                          p)
+                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files, p)
                                 if merged_meta:
                                     st.session_state.stitch_cache[particle_key] = merged_meta
 
@@ -522,25 +548,45 @@ with st.sidebar:
                 "text/csv"
             )
 
-    # ─────────────────────────────────────────────────────────────────────────────
-    # MAIN (Gallery, Summary Table, Mass Edit - same as before)
-    # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN (Gallery, Summary Table, Mass Edit - same as before)
+# ─────────────────────────────────────────────────────────────────────────────
 
     st.divider()
 
     if st.session_state.results is None:
         st.info("👈 Upload tiles and run inference on GPU")
     else:
+        # DEDUPLICATE BY LOCATION (same spot, different class predictions)
+        # Keep highest confidence for each unique location
+        deduplicated_by_location = {}
+        for p in st.session_state.results:
+            location_key = f"{p.get('tile_id')}_{p.get('x')}_{p.get('y')}"
+
+            if location_key not in deduplicated_by_location:
+                deduplicated_by_location[location_key] = p
+            else:
+                # Keep the one with higher confidence
+                if p.get('confidence', 0) > deduplicated_by_location[location_key].get('confidence', 0):
+                    deduplicated_by_location[location_key] = p
+
+        # Mark duplicates as deleted (keep highest confidence)
+        location_dedup_count = 0
+        for p in st.session_state.results:
+            location_key = f"{p.get('tile_id')}_{p.get('x')}_{p.get('y')}"
+            if deduplicated_by_location[location_key] is not p:
+                p["deleted"] = True
+                location_dedup_count += 1
+
+        if location_dedup_count > 0:
+            st.warning(f"⚠️ Found {location_dedup_count} duplicate locations (same spot, different class) - kept highest confidence only")
+
         # Show final count after any deletions
         total_after_deletions = len([p for p in st.session_state.results if not p.get("deleted")])
         total_deleted_by_user = len([p for p in st.session_state.results if p.get("deleted")])
 
         if total_deleted_by_user > 0:
-            st.warning(f"⚠️ User deleted {total_deleted_by_user} particles")
-            st.info(
-                f"📊 **ACTIVE PARTICLES: {total_after_deletions}** (from {len(st.session_state.results)} after processing)")
-
-        st.divider()
+            st.info(f"📊 **ACTIVE PARTICLES: {total_after_deletions}** (Removed: {total_deleted_by_user})")
     # SUMMARY TABLE
     st.subheader("📊 Summary Table")
 
@@ -549,7 +595,7 @@ with st.sidebar:
         data[cls] = {}
         for b, _, _ in SIZE_BINS:
             count = len([p for p in st.session_state.results
-                         if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
+                        if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
             data[cls][b] = count
 
     rows = []
@@ -574,7 +620,7 @@ with st.sidebar:
     # GALLERY
     st.subheader("🖼️ Particle Gallery")
 
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
     with col1:
         filter_class = st.multiselect(
             "Class:",
@@ -594,6 +640,8 @@ with st.sidebar:
     with col4:
         show_merged_only = st.checkbox("Merged only")
     with col5:
+        sort_by = st.selectbox("Sort by:", ["Confidence (High→Low)", "Confidence (Low→High)", "Size (Large→Small)", "Size (Small→Large)"], index=0)
+    with col6:
         items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
 
     # Filter particles
@@ -605,6 +653,16 @@ with st.sidebar:
             if show_merged_only and not p.get("merged"):
                 continue
             all_particles.append((idx, p))
+
+    # Apply sorting
+    if sort_by == "Confidence (High→Low)":
+        all_particles.sort(key=lambda x: x[1].get('confidence', 0), reverse=True)
+    elif sort_by == "Confidence (Low→High)":
+        all_particles.sort(key=lambda x: x[1].get('confidence', 0), reverse=False)
+    elif sort_by == "Size (Large→Small)":
+        all_particles.sort(key=lambda x: x[1].get('diameter_um', 0), reverse=True)
+    elif sort_by == "Size (Small→Large)":
+        all_particles.sort(key=lambda x: x[1].get('diameter_um', 0), reverse=False)
 
     if all_particles:
         st.success(f"{len(all_particles)} particles")
@@ -651,7 +709,7 @@ with st.sidebar:
                     # Draw bright blue box
                     crop_pil = Image.fromarray(crop).convert('RGB')
                     draw = ImageDraw.Draw(crop_pil)
-                    draw.rectangle([(x - x1, y - y1), (x + w - x1, y + h - y1)], outline=(0, 100, 255), width=2)
+                    draw.rectangle([(x-x1, y-y1), (x+w-x1, y+h-y1)], outline=(0, 100, 255), width=2)
                     crop = np.array(crop_pil)
 
                     st.image(crop)
@@ -741,13 +799,13 @@ with st.sidebar:
         with st.expander("📋 Processing Breakdown", expanded=False):
             st.write(f"""
             **From Detection to Final Count:**
-
+            
             1. **Raw detections:** Particles found in all tiles
             2. **Duplicates removed:** Same particle in overlap zones (IOU > 0.3)
             3. **Merged pairs:** Cut particles stitched together at seams
             4. **User deletions:** Manually removed particles
             5. **Final active:** Ready for export/analysis
-
+            
             **Current Status:**
             - Total after processing: {total_processed}
             - User deleted: {final_deleted}
