@@ -49,20 +49,17 @@ SIZE_BINS = [
     ("J: 1000μm+ (0 pcs)", 1000, float("inf")),
 ]
 
-
 @st.cache_resource
 def load_model():
     if not os.path.exists(MODEL_PATH):
         return None
     return YOLO(MODEL_PATH)
 
-
 def get_size_bin(diameter_um):
     for label, lo, hi in SIZE_BINS:
         if lo <= diameter_um < hi:
             return label
     return "K"
-
 
 def calculate_particle_size_accurate(mask_array, calibration):
     """Edge detection sizing"""
@@ -90,7 +87,6 @@ def calculate_particle_size_accurate(mask_array, calibration):
         pass
 
     return None, "failed"
-
 
 def calculate_merged_particle_size(stitched_image, calibration):
     """Recalculate size on the complete stitched image using edge detection"""
@@ -121,7 +117,6 @@ def calculate_merged_particle_size(stitched_image, calibration):
         pass
 
     return None, "failed"
-
 
 def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
     """Stitch together tiles for a merged cut particle and recalculate size"""
@@ -175,7 +170,6 @@ def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
         }, seam_position
     except:
         return None, None, None
-
 
 def detect_particles_in_tiles(tile_files, tile_metadata, model):
     """Detect in all tiles (loads from uploaded files)"""
@@ -251,7 +245,6 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
     status.empty()
     return all_particles
 
-
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -267,10 +260,8 @@ if "tile_metadata" not in st.session_state:
 if "tile_files" not in st.session_state:
     st.session_state.tile_files = {}
 
-
 def push_undo():
     st.session_state.undo_stack.append(deepcopy(st.session_state.results))
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -342,9 +333,9 @@ with st.sidebar:
 
                     matcher = IntelligentParticleMatcher(
                         matcher_metadata,
-                        size_tolerance=0.20,  # 20% size difference ok
-                        edge_margin_pct=0.10,  # Check within 10% of edge
-                        confidence_threshold=0.5  # Min confidence for match
+                        size_tolerance=0.20,      # 20% size difference ok
+                        edge_margin_pct=0.10,     # Check within 10% of edge
+                        confidence_threshold=0.5   # Min confidence for match
                     )
 
                     # Find all edge matches
@@ -359,12 +350,11 @@ with st.sidebar:
 
                     # Load all tile images for stitching
                     tile_images = {}
-                    for tile_meta in st.session_state.tile_metadata:
-                        tile_idx = tile_meta["tile_id"]
+                    for tile_idx, tile_meta in enumerate(st.session_state.tile_metadata):
                         filename = tile_meta["filename"]
                         try:
                             tile_file = st.session_state.tile_files[filename]
-                            tile_img = Image.open(tile_file).convert('BGR')
+                            tile_img = Image.open(tile_file).convert('RGB')  # PIL uses RGB, not BGR
                             tile_images[tile_idx] = np.array(tile_img)
                         except Exception as e:
                             st.warning(f"Could not load tile {filename} for stitching: {e}")
@@ -411,7 +401,7 @@ with st.sidebar:
 
                                 if stitch:
                                     st.write(f"""
-                                    **Match {i + 1}:** Score {score:.2f}
+                                    **Match {i+1}:** Score {score:.2f}
                                     - **Original:** {p1.get('class')} - {p1.get('diameter_um'):.1f}µm (Tile {match['tile1_id']})
                                     - **Stitched:** {stitch['stitched_diameter_um']:.1f}µm
                                     - **Change:** {stitch['size_change_pct']:+.1f}%
@@ -419,7 +409,7 @@ with st.sidebar:
                                     """)
                                 else:
                                     st.write(f"""
-                                    **Match {i + 1}:** Score {score:.2f}
+                                    **Match {i+1}:** Score {score:.2f}
                                     - {p1.get('class')} ({p1.get('diameter_um'):.1f}µm) 
                                     - {p2.get('class')} ({p2.get('diameter_um'):.1f}µm)
                                     - Direction: {match['direction']}
@@ -450,8 +440,7 @@ with st.sidebar:
 
                         # Same tile and within tolerance distance?
                         if tile_id == existing_tile_id:
-                            dist = ((p_center_x - existing_center_x) ** 2 + (
-                                        p_center_y - existing_center_y) ** 2) ** 0.5
+                            dist = ((p_center_x - existing_center_x)**2 + (p_center_y - existing_center_y)**2)**0.5
                             if dist < location_tolerance:
                                 # Same location! Keep higher confidence
                                 if p_conf > existing_p.get('confidence', 0):
@@ -473,8 +462,7 @@ with st.sidebar:
                         location_dedup_count += 1
 
                 if location_dedup_count > 0:
-                    st.warning(
-                        f"⚠️ Found {location_dedup_count} duplicate locations (same spot, different class) - kept highest confidence")
+                    st.warning(f"⚠️ Found {location_dedup_count} duplicate locations (same spot, different class) - kept highest confidence")
 
                 # After dedup, work with non-deleted particles
                 dedup_particles = [p for p in iou_dedup_particles if not p.get("deleted")]
@@ -552,7 +540,7 @@ with st.sidebar:
                     with st.expander("📊 What happened:"):
                         st.write(f"""
                         **Processing Pipeline (Smart Matching):**
-
+                        
                         Raw detections: {len(raw_particles)}
                         ✅ Smart edge matching (size/class/position): -{iou_stats['duplicates_removed']}
                            - Compares particles at tile boundaries
@@ -564,7 +552,7 @@ with st.sidebar:
                            - Marks cut particles at edges (not yet stitched)
                         ────────────────────────
                         **FINAL: {len(merged_particles)}**
-
+                        
                         **Matching Criteria:**
                         - Size match: diameter difference ≤ 20%
                         - Class match: same particle class
@@ -575,17 +563,17 @@ with st.sidebar:
                     with st.expander("ℹ️ Deduplication Details"):
                         st.write("""
                         **Smart Edge-Based Matching (No Blind Assumptions)**
-
+                        
                         Instead of assuming 10% overlap, we use metadata + intelligent criteria:
-
+                        
                         **Step 1: Find Neighbors**
                         - Use metadata "neighbors" field to identify which tiles touch
                         - Check left/right/top/bottom edges
-
+                        
                         **Step 2: Find Edge Particles**
                         - Collect particles within 10% of each tile edge
                         - Prepare to compare across boundaries
-
+                        
                         **Step 3: Smart Matching**
                         For each particle on edge, find best match in neighbor tile:
                         ✅ Size check: diameter difference ≤ 20%
@@ -598,30 +586,30 @@ with st.sidebar:
                            - For top/bottom edges: X positions should be similar
                         ✅ Confidence check: at least one detection confident
                            - Min 0.5 confidence on highest scorer
-
+                        
                         **Step 4: Keep Highest Confidence**
                         - If all criteria met: particles are likely the SAME particle
                         - Keep the one with higher confidence
                         - Remove the lower confidence duplicate
-
+                        
                         **Step 5: Future - Stitch Cut Particles**
                         - For matched particles at seams: combine images
                         - Recalculate size on stitched image
                         - Update diameter_um with true complete measurement
-
+                        
                         **Example:**
                         ```
                         Tile 0 near right edge: Particle A - 50µm, Fiber, conf 0.92
                         Tile 1 near left edge:  Particle B - 52µm, Fiber, conf 0.78
-
+                        
                         Size: 52-50=2µm, 2/50=4% ✓ (< 20%)
                         Class: Fiber = Fiber ✓
                         Y-pos: Similar ✓
                         Conf: 0.92 ≥ 0.5 ✓
-
+                        
                         → MATCH! Keep A (0.92), delete B (0.78)
                         ```
-
+                        
                         **Why This is Better:**
                         ✅ No blind coordinate assumptions
                         ✅ Uses actual metadata neighbors
@@ -661,8 +649,7 @@ with st.sidebar:
             rows = []
             for p in st.session_state.results:
                 if not p.get("deleted"):
-                    status = "MERGED (stitched)" if p.get("merged") else (
-                        "AT_SEAM (check)" if p.get("at_seam") else "OK")
+                    status = "MERGED (stitched)" if p.get("merged") else ("AT_SEAM (check)" if p.get("at_seam") else "OK")
 
                     # If merged, try to get recalculated size
                     diameter_um = p["diameter_um"]
@@ -674,8 +661,7 @@ with st.sidebar:
                             particle_key = f"{p.get('tile_filename')}_{p.get('x')}_{p.get('y')}"
 
                             if particle_key not in st.session_state.stitch_cache:
-                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files,
-                                                                                          p)
+                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files, p)
                                 if merged_meta:
                                     st.session_state.stitch_cache[particle_key] = merged_meta
 
@@ -726,7 +712,7 @@ else:
         data[cls] = {}
         for b, _, _ in SIZE_BINS:
             count = len([p for p in st.session_state.results
-                         if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
+                        if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
             data[cls][b] = count
 
     rows = []
@@ -777,18 +763,30 @@ else:
     with col5:
         sort_by = st.selectbox("Sort:", ["Confidence ↓", "Confidence ↑", "Size ↓", "Size ↑"], index=0)
     with col6:
+        show_duplicates = st.checkbox("Show duplicates")
+
+    # Pagination row
+    col_p1, col_p2, col_p3, col_p4, col_p5, col_p6 = st.columns(6)
+    with col_p6:
         items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
 
     # Filter particles
     all_particles = []
     if st.session_state.results is not None:
         for idx, p in enumerate(st.session_state.results):
-            if not p.get("deleted") and p.get("class") in filter_class and p.get("size_bin") in filter_bins:
-                if show_seams_only and not p.get("at_seam"):
-                    continue
-                if show_merged_only and not p.get("merged"):
-                    continue
-                all_particles.append((idx, p))
+            # Include deleted particles only if show_duplicates is True
+            if p.get("deleted") and not show_duplicates:
+                continue
+
+            if p.get("class") not in filter_class or p.get("size_bin") not in filter_bins:
+                continue
+
+            if show_seams_only and not p.get("at_seam"):
+                continue
+            if show_merged_only and not p.get("merged"):
+                continue
+
+            all_particles.append((idx, p))
 
     # Apply sorting
     if sort_by == "Confidence ↓":
@@ -846,7 +844,7 @@ else:
                     # Draw bright blue box
                     crop_pil = Image.fromarray(crop).convert('RGB')
                     draw = ImageDraw.Draw(crop_pil)
-                    draw.rectangle([(x - x1, y - y1), (x + w - x1, y + h - y1)], outline=(0, 100, 255), width=2)
+                    draw.rectangle([(x-x1, y-y1), (x+w-x1, y+h-y1)], outline=(0, 100, 255), width=2)
                     crop = np.array(crop_pil)
 
                     # Resize to constant width (250px) while maintaining aspect ratio
@@ -862,9 +860,18 @@ else:
                     method = p.get("size_method", "?")
                     caption = f"{p.get('class', '?')} | {p.get('size_bin', '?')}\n{p.get('diameter_um', '?'):.1f}µm ({method})\nConf: {p.get('confidence', 0):.2f}"
 
+                    # Mark deleted/duplicate particles
+                    if p.get("deleted"):
+                        caption = f"❌ DUPLICATE\n{caption}\n(Removed - lower confidence)"
+
                     # Mark merged particles
-                    if p.get("merged"):
+                    elif p.get("merged"):
                         caption = f"🔗 MERGED\n{caption}\n✅ Size recalculated"
+
+                    # Add stitched marker if applicable
+                    if p.get("stitched"):
+                        size_change = p.get("size_change_pct", 0)
+                        caption += f"\n🔗 Stitched ({size_change:+.0f}%)"
 
                     # Add seam warning if applicable
                     if p.get("at_seam") and not p.get("merged"):
@@ -1019,8 +1026,7 @@ else:
                                         with c1:
                                             st.write(f"**Class:** {p.get('class', '?')}")
                                         with c2:
-                                            st.write(
-                                                f"**Size (recalc):** {merged_metadata.get('diameter_um', '?')}µm ({merged_metadata.get('size_bin', '?')})")
+                                            st.write(f"**Size (recalc):** {merged_metadata.get('diameter_um', '?')}µm ({merged_metadata.get('size_bin', '?')})")
                                         with c3:
                                             st.write(f"**Method:** {merged_metadata.get('size_method', '?')}")
                                         with c4:
@@ -1051,8 +1057,8 @@ else:
                                 h = p.get("h", 0)
 
                                 if x and y and w and h:
-                                    fig.add_shape(type="rect", x0=x, y0=y, x1=x + w, y1=y + h,
-                                                  line=dict(color="rgb(0, 100, 255)", width=3))
+                                    fig.add_shape(type="rect", x0=x, y0=y, x1=x+w, y1=y+h,
+                                               line=dict(color="rgb(0, 100, 255)", width=3))
 
                                 fig.update_layout(
                                     title=f"{filename} | {p.get('class', '?')} ({p.get('size_bin', '?')}) {p.get('diameter_um', '?')}µm",
