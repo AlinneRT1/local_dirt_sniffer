@@ -399,7 +399,10 @@ def display_particle_crop(pidx, p):
             st.info(f"**Why removed:** {p.get('duplicate_reason')}")
 
         # CHECKBOX - Select particle for mass operations
-        key = f"sel_{pidx}"
+        # Use hash of particle data + index to ensure uniqueness even if same particle displayed multiple times
+        import hashlib
+        p_hash = hashlib.md5(str(pidx).encode()).hexdigest()[:8]
+        key = f"sel_{pidx}_{p_hash}"
         is_selected = key in st.session_state.selected_particles
         if st.checkbox("Select", value=is_selected, key=key):
             st.session_state.selected_particles.add(key)
@@ -411,9 +414,9 @@ def display_particle_crop(pidx, p):
             "Class:",
             ["Fiber", "Glass", "Metallic", "Other"],
             index=["Fiber", "Glass", "Metallic", "Other"].index(p.get("class", "Other")),
-            key=f"cls_{pidx}"
+            key=f"cls_{pidx}_{p_hash}"
         )
-        if new_cls != p.get("class") and st.button("✓", key=f"save_{pidx}"):
+        if new_cls != p.get("class") and st.button("✓", key=f"save_{pidx}_{p_hash}"):
             push_undo()
             st.session_state.results[pidx]["class"] = new_cls
             # Recalculate size bin for new class
@@ -422,14 +425,14 @@ def display_particle_crop(pidx, p):
             st.rerun()
 
         # DELETE BUTTON
-        if st.button("🗑️", key=f"del_{pidx}"):
+        if st.button("🗑️", key=f"del_{pidx}_{p_hash}"):
             push_undo()
             st.session_state.results[pidx]["deleted"] = True
             st.rerun()
 
         # VIEW FULL BUTTON - Expand to full image
         # Don't show for deleted/duplicate particles (view them in pair comparison instead)
-        if not p.get("deleted") and st.button("🔍", key=f"view_{pidx}"):
+        if not p.get("deleted") and st.button("🔍", key=f"view_{pidx}_{p_hash}"):
             st.session_state[f"show_full_{pidx}"] = True
             st.rerun()
 

@@ -29,9 +29,9 @@ class IntelligentParticleMatcher:
         self.confidence_threshold = confidence_threshold
 
     def find_edge_particles(self, particles: List[Dict], tile_id: int,
-                           direction: str) -> List[Tuple[int, Dict]]:
+                            direction: str) -> List[Tuple[int, Dict]]:
         """
-        Find particles near an edge of a tile
+        Find particles near an edge of a tile (STRICTLY - only very close to boundary)
 
         Args:
             particles: All particles
@@ -39,12 +39,14 @@ class IntelligentParticleMatcher:
             direction: "left", "right", "top", "bottom"
 
         Returns:
-            List of (particle_idx, particle) tuples near the edge
+            List of (particle_idx, particle) tuples at the edge
         """
         tile = self.tiles[tile_id]
         tile_w = tile["width"]
         tile_h = tile["height"]
-        margin = max(tile_w, tile_h) * self.edge_margin_pct
+        # STRICT: Only consider particles within 10% of tile size from the edge
+        # This means they must actually touch or cross the boundary
+        margin = max(tile_w, tile_h) * 0.1  # Was self.edge_margin_pct, now hardcoded to 0.1
 
         edge_particles = []
 
@@ -57,14 +59,15 @@ class IntelligentParticleMatcher:
             w = p.get("w", 0)
             h = p.get("h", 0)
 
-            # Check which edge
-            if direction == "left" and x < margin:
+            # Check which edge - STRICT: particle must actually extend to or cross boundary
+            if direction == "left" and x < margin and (x + w) > 0:  # Left edge: starts near left
                 edge_particles.append((idx, p))
-            elif direction == "right" and x + w > tile_w - margin:
+            elif direction == "right" and (x + w) > (tile_w - margin) and x < tile_w:  # Right edge: extends past right
                 edge_particles.append((idx, p))
-            elif direction == "top" and y < margin:
+            elif direction == "top" and y < margin and (y + h) > 0:  # Top edge: starts near top
                 edge_particles.append((idx, p))
-            elif direction == "bottom" and y + h > tile_h - margin:
+            elif direction == "bottom" and (y + h) > (
+                    tile_h - margin) and y < tile_h:  # Bottom edge: extends past bottom
                 edge_particles.append((idx, p))
 
         return edge_particles
@@ -141,7 +144,7 @@ class IntelligentParticleMatcher:
         return is_match, match_info
 
     def find_matches_for_edge(self, particles: List[Dict], tile_id_1: int,
-                             tile_id_2: int, direction: str) -> List[Dict]:
+                              tile_id_2: int, direction: str) -> List[Dict]:
         """
         Find matching particles between two neighboring tiles
 
@@ -256,7 +259,8 @@ class IntelligentParticleMatcher:
 
         return particles, matches
 
-    def stitch_particles(self, match: Dict, tile_images: Dict, calibration_um_per_pixel: float = 1.299) -> Optional[Dict]:
+    def stitch_particles(self, match: Dict, tile_images: Dict, calibration_um_per_pixel: float = 1.299) -> Optional[
+        Dict]:
         """
         Stitch two matched particles and recalculate size
         Creates stitched image with overlap based on particle positions
@@ -390,15 +394,15 @@ class IntelligentParticleMatcher:
                 if direction == "right":
                     # Vertical red line at boundary
                     cv2.line(stitched_img_marked,
-                            (int(boundary_line_pos), 0),
-                            (int(boundary_line_pos), stitched_img_marked.shape[0]),
-                            line_color, line_thickness)
+                             (int(boundary_line_pos), 0),
+                             (int(boundary_line_pos), stitched_img_marked.shape[0]),
+                             line_color, line_thickness)
                 elif direction == "bottom":
                     # Horizontal red line at boundary
                     cv2.line(stitched_img_marked,
-                            (0, int(boundary_line_pos)),
-                            (stitched_img_marked.shape[1], int(boundary_line_pos)),
-                            line_color, line_thickness)
+                             (0, int(boundary_line_pos)),
+                             (stitched_img_marked.shape[1], int(boundary_line_pos)),
+                             line_color, line_thickness)
 
                 # Draw BLUE BOUNDING BOX around complete particle ✅
                 box_color = (0, 0, 255)  # Blue in RGB
@@ -412,7 +416,7 @@ class IntelligentParticleMatcher:
 
             # Recalculate diameter on stitched image
             # For cut particles, the stitched bbox should be larger than either partial bbox
-            stitched_diagonal_px = np.sqrt(stitched_w**2 + stitched_h**2)
+            stitched_diagonal_px = np.sqrt(stitched_w ** 2 + stitched_h ** 2)
             stitched_diameter_um = stitched_diagonal_px * calibration_um_per_pixel
 
             # Calculate size change
@@ -426,7 +430,8 @@ class IntelligentParticleMatcher:
 
                 # If size change is 0% or negative, particles aren't actually merging
                 if size_change_pct <= 0:
-                    print(f"⚠️ WARNING: Stitched size not larger! Original: {original_diameter:.1f}µm, Stitched: {stitched_diameter_um:.1f}µm")
+                    print(
+                        f"⚠️ WARNING: Stitched size not larger! Original: {original_diameter:.1f}µm, Stitched: {stitched_diameter_um:.1f}µm")
                     print(f"   P1: ({x1}, {y1}, {w1}×{h1}) on {tile1_w}×{tile1_h}")
                     print(f"   P2: ({x2}, {y2}, {w2}×{h2}) on {tile2_w}×{tile2_h}")
                     print(f"   Stitched bbox: {stitched_w}×{stitched_h}")
