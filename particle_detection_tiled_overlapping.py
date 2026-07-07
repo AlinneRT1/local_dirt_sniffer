@@ -34,6 +34,7 @@ import torch
 st.set_page_config(page_title="tiled dirt sniffer", page_icon="icon.ico", layout="wide")
 st.title("🐕 tiled_dirt_sniffer: Review Dashboard")
 
+
 # ============================================================
 # GPU/Device Detection - Support NVIDIA and Intel Arc
 # ============================================================
@@ -85,6 +86,7 @@ def detect_device():
     device_info["backend"] = "CPU"
     return device_info
 
+
 # Detect device on startup
 DEVICE_INFO = detect_device()
 DEVICE = DEVICE_INFO["device"]
@@ -105,6 +107,7 @@ SIZE_BINS = [
     ("J: 1000μm+ (0 pcs)", 1000, float("inf")),
 ]
 
+
 @st.cache_resource
 def load_model():
     if not os.path.exists(MODEL_PATH):
@@ -114,11 +117,13 @@ def load_model():
     # Don't use .to() with YOLO models
     return model
 
+
 def get_size_bin(diameter_um):
     for label, lo, hi in SIZE_BINS:
         if lo <= diameter_um < hi:
             return label
     return "K"
+
 
 def calculate_particle_size_accurate(mask_array, calibration):
     """Edge detection sizing"""
@@ -146,6 +151,7 @@ def calculate_particle_size_accurate(mask_array, calibration):
         pass
 
     return None, "failed"
+
 
 def calculate_merged_particle_size(stitched_image, calibration):
     """Recalculate size on the complete stitched image using edge detection"""
@@ -176,6 +182,7 @@ def calculate_merged_particle_size(stitched_image, calibration):
         pass
 
     return None, "failed"
+
 
 def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
     """Stitch together tiles for a merged cut particle and recalculate size"""
@@ -229,6 +236,7 @@ def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
         }, seam_position
     except:
         return None, None, None
+
 
 def detect_particles_in_tiles(tile_files, tile_metadata, model):
     """Detect in all tiles (loads from uploaded files)"""
@@ -304,6 +312,7 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
     status.empty()
     return all_particles
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -319,8 +328,10 @@ if "tile_metadata" not in st.session_state:
 if "tile_files" not in st.session_state:
     st.session_state.tile_files = {}
 
+
 def push_undo():
     st.session_state.undo_stack.append(deepcopy(st.session_state.results))
+
 
 def display_particle_crop(pidx, p):
     """Display a single particle as a gallery thumbnail with ALL interactive features"""
@@ -344,7 +355,7 @@ def display_particle_crop(pidx, p):
         crop = tile_img_arr[y1:y2, x1:x2].copy()
         crop_pil = Image.fromarray(crop).convert('RGB')
         draw = ImageDraw.Draw(crop_pil)
-        draw.rectangle([(x-x1, y-y1), (x+w-x1, y+h-y1)], outline=(0, 100, 255), width=2)
+        draw.rectangle([(x - x1, y - y1), (x + w - x1, y + h - y1)], outline=(0, 100, 255), width=2)
 
         aspect_ratio = crop_pil.height / crop_pil.width
         new_height = int(250 * aspect_ratio)
@@ -406,7 +417,8 @@ def display_particle_crop(pidx, p):
             push_undo()
             st.session_state.results[pidx]["class"] = new_cls
             # Recalculate size bin for new class
-            st.session_state.results[pidx]["size_bin"] = get_size_bin(st.session_state.results[pidx].get("diameter_um", 0))
+            st.session_state.results[pidx]["size_bin"] = get_size_bin(
+                st.session_state.results[pidx].get("diameter_um", 0))
             st.rerun()
 
         # DELETE BUTTON
@@ -423,6 +435,7 @@ def display_particle_crop(pidx, p):
 
     except Exception as e:
         st.error(f"❌ Display error: {str(e)[:200]}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -508,9 +521,9 @@ with st.sidebar:
 
                     matcher = IntelligentParticleMatcher(
                         matcher_metadata,
-                        size_tolerance=0.20,      # 20% size difference ok
-                        edge_margin_pct=0.10,     # Check within 10% of edge
-                        confidence_threshold=0.5   # Min confidence for match
+                        size_tolerance=0.20,  # 20% size difference ok
+                        edge_margin_pct=0.10,  # Check within 10% of edge
+                        confidence_threshold=0.5  # Min confidence for match
                     )
 
                     # Find all edge matches
@@ -576,7 +589,8 @@ with st.sidebar:
                                     deleted_p["matched_with"] = kept_particle_idx
                                     deleted_p["duplicate_type"] = "edge_duplicate"  # Mark as edge duplicate ✅
                                     stitch_direction = stitch_info.get("direction", "?")
-                                    deleted_p["duplicate_reason"] = f"Cut across {stitch_direction} boundary, kept higher confidence"
+                                    deleted_p[
+                                        "duplicate_reason"] = f"Cut across {stitch_direction} boundary, kept higher confidence"
 
                                 marked_merged_count += 1
 
@@ -588,7 +602,7 @@ with st.sidebar:
                         st.write("**Stitched Particles Details:**")
                         for idx, stitch in enumerate(stitch_results[:5]):  # Show first 5
                             st.write(f"""
-**Pair {idx+1}:**
+**Pair {idx + 1}:**
 - Original: {stitch['original_diameter_um']:.1f}µm
 - Stitched: {stitch['stitched_diameter_um']:.1f}µm
 - Change: {stitch['size_change_pct']:+.1f}%
@@ -616,7 +630,7 @@ with st.sidebar:
 
                                 if stitch:
                                     st.write(f"""
-                                    **Match {i+1}:** Score {score:.2f}
+                                    **Match {i + 1}:** Score {score:.2f}
                                     - **Original:** {p1.get('class')} - {p1.get('diameter_um'):.1f}µm (Tile {match['tile1_id']})
                                     - **Stitched:** {stitch['stitched_diameter_um']:.1f}µm
                                     - **Change:** {stitch['size_change_pct']:+.1f}%
@@ -624,7 +638,7 @@ with st.sidebar:
                                     """)
                                 else:
                                     st.write(f"""
-                                    **Match {i+1}:** Score {score:.2f}
+                                    **Match {i + 1}:** Score {score:.2f}
                                     - {p1.get('class')} ({p1.get('diameter_um'):.1f}µm) 
                                     - {p2.get('class')} ({p2.get('diameter_um'):.1f}µm)
                                     - Direction: {match['direction']}
@@ -655,7 +669,8 @@ with st.sidebar:
 
                         # Same tile and within tolerance distance?
                         if tile_id == existing_tile_id:
-                            dist = ((p_center_x - existing_center_x)**2 + (p_center_y - existing_center_y)**2)**0.5
+                            dist = ((p_center_x - existing_center_x) ** 2 + (
+                                        p_center_y - existing_center_y) ** 2) ** 0.5
                             if dist < location_tolerance:
                                 # Same location! Keep higher confidence
                                 if p_conf > existing_p.get('confidence', 0):
@@ -671,7 +686,8 @@ with st.sidebar:
                 # Mark duplicates as deleted and track matches
                 location_dedup_count = 0
                 kept_particle_ids = set(id(p) for p in deduplicated_by_location.values())
-                kept_particles_by_id = {id(p): (idx, p) for idx, p in enumerate(iou_dedup_particles) if id(p) in kept_particle_ids}
+                kept_particles_by_id = {id(p): (idx, p) for idx, p in enumerate(iou_dedup_particles) if
+                                        id(p) in kept_particle_ids}
 
                 # Mark deleted and set matched_with
                 for idx, p in enumerate(iou_dedup_particles):
@@ -689,20 +705,22 @@ with st.sidebar:
                             kept_center_y = kept_p.get('y', 0) + kept_p.get('h', 0) / 2
 
                             if tile_id == kept_tile_id:
-                                dist = ((p_center_x - kept_center_x)**2 + (p_center_y - kept_center_y)**2)**0.5
+                                dist = ((p_center_x - kept_center_x) ** 2 + (p_center_y - kept_center_y) ** 2) ** 0.5
                                 if dist < location_tolerance:
                                     p["matched_with"] = kept_idx
                                     # Mark as location duplicate (same spot, different class) ✅
                                     p["duplicate_type"] = "location_duplicate"
                                     kept_conf = kept_p.get('confidence', 0)
                                     del_conf = p.get('confidence', 0)
-                                    p["duplicate_reason"] = f"Same spot: {p.get('class')} ({del_conf:.2f}) vs {kept_p.get('class')} ({kept_conf:.2f})"
+                                    p[
+                                        "duplicate_reason"] = f"Same spot: {p.get('class')} ({del_conf:.2f}) vs {kept_p.get('class')} ({kept_conf:.2f})"
                                     break
 
                         location_dedup_count += 1
 
                 if location_dedup_count > 0:
-                    st.warning(f"⚠️ Found {location_dedup_count} duplicate locations (same spot, different class) - kept highest confidence")
+                    st.warning(
+                        f"⚠️ Found {location_dedup_count} duplicate locations (same spot, different class) - kept highest confidence")
 
                 # Debug: count deleted particles
                 deleted_in_dedup = len([p for p in iou_dedup_particles if p.get("deleted")])
@@ -712,7 +730,8 @@ with st.sidebar:
                 # Don't filter out deleted particles here - we need them for the "show duplicates only" filter
                 all_dedup_particles = iou_dedup_particles  # Keep ALL particles including deleted
                 active_particles = [p for p in iou_dedup_particles if not p.get("deleted")]
-                st.write(f"After all dedup: {len(active_particles)} active particles (+ {len(iou_dedup_particles) - len(active_particles)} deleted)")
+                st.write(
+                    f"After all dedup: {len(active_particles)} active particles (+ {len(iou_dedup_particles) - len(active_particles)} deleted)")
 
                 # Step 2: Mark seams only (disable merging without accurate coords)
                 try:
@@ -784,13 +803,13 @@ with st.sidebar:
                     st.write(f"   Location dedup removed: {location_dedup_count} (tolerance: 10px)")
                     st.write(f"   Seam particles marked: {num_at_seam}")
                     active_count = len([p for p in merged_particles if not p.get("deleted")])
-                    st.write(f"   **Final count (active): {active_count}** (+ {len(merged_particles) - active_count} deleted)")
-
+                    st.write(
+                        f"   **Final count (active): {active_count}** (+ {len(merged_particles) - active_count} deleted)")
 
                     with st.expander("📊 What happened:"):
                         st.write(f"""
                         **Processing Pipeline (Smart Matching):**
-                        
+
                         Raw detections: {len(raw_particles)}
                         ✅ Smart edge matching (size/class/position): -{iou_stats['duplicates_removed']}
                            - Compares particles at tile boundaries
@@ -802,7 +821,7 @@ with st.sidebar:
                            - Marks cut particles at edges (not yet stitched)
                         ────────────────────────
                         **FINAL: {len(merged_particles)}**
-                        
+
                         **Matching Criteria:**
                         - Size match: diameter difference ≤ 20%
                         - Class match: same particle class
@@ -813,17 +832,17 @@ with st.sidebar:
                     with st.expander("ℹ️ Deduplication Details"):
                         st.write("""
                         **Smart Edge-Based Matching (No Blind Assumptions)**
-                        
+
                         Instead of assuming 10% overlap, we use metadata + intelligent criteria:
-                        
+
                         **Step 1: Find Neighbors**
                         - Use metadata "neighbors" field to identify which tiles touch
                         - Check left/right/top/bottom edges
-                        
+
                         **Step 2: Find Edge Particles**
                         - Collect particles within 10% of each tile edge
                         - Prepare to compare across boundaries
-                        
+
                         **Step 3: Smart Matching**
                         For each particle on edge, find best match in neighbor tile:
                         ✅ Size check: diameter difference ≤ 20%
@@ -836,30 +855,30 @@ with st.sidebar:
                            - For top/bottom edges: X positions should be similar
                         ✅ Confidence check: at least one detection confident
                            - Min 0.5 confidence on highest scorer
-                        
+
                         **Step 4: Keep Highest Confidence**
                         - If all criteria met: particles are likely the SAME particle
                         - Keep the one with higher confidence
                         - Remove the lower confidence duplicate
-                        
+
                         **Step 5: Future - Stitch Cut Particles**
                         - For matched particles at seams: combine images
                         - Recalculate size on stitched image
                         - Update diameter_um with true complete measurement
-                        
+
                         **Example:**
                         ```
                         Tile 0 near right edge: Particle A - 50µm, Fiber, conf 0.92
                         Tile 1 near left edge:  Particle B - 52µm, Fiber, conf 0.78
-                        
+
                         Size: 52-50=2µm, 2/50=4% ✓ (< 20%)
                         Class: Fiber = Fiber ✓
                         Y-pos: Similar ✓
                         Conf: 0.92 ≥ 0.5 ✓
-                        
+
                         → MATCH! Keep A (0.92), delete B (0.78)
                         ```
-                        
+
                         **Why This is Better:**
                         ✅ No blind coordinate assumptions
                         ✅ Uses actual metadata neighbors
@@ -899,7 +918,8 @@ with st.sidebar:
             rows = []
             for p in st.session_state.results:
                 if not p.get("deleted"):
-                    status = "MERGED (stitched)" if p.get("merged") else ("AT_SEAM (check)" if p.get("at_seam") else "OK")
+                    status = "MERGED (stitched)" if p.get("merged") else (
+                        "AT_SEAM (check)" if p.get("at_seam") else "OK")
 
                     # If merged, try to get recalculated size
                     diameter_um = p["diameter_um"]
@@ -911,7 +931,8 @@ with st.sidebar:
                             particle_key = f"{p.get('tile_filename')}_{p.get('x')}_{p.get('y')}"
 
                             if particle_key not in st.session_state.stitch_cache:
-                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files, p)
+                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files,
+                                                                                          p)
                                 if merged_meta:
                                     st.session_state.stitch_cache[particle_key] = merged_meta
 
@@ -962,7 +983,7 @@ else:
         data[cls] = {}
         for b, _, _ in SIZE_BINS:
             count = len([p for p in st.session_state.results
-                        if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
+                         if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
             data[cls][b] = count
 
     rows = []
@@ -1095,7 +1116,8 @@ else:
                 unmatched_count += 1
 
         # Debug info
-        st.info(f"✅ Found {len(paired_particles)} duplicate pairs | ❌ {unmatched_count} deleted particles without match link")
+        st.info(
+            f"✅ Found {len(paired_particles)} duplicate pairs | ❌ {unmatched_count} deleted particles without match link")
 
         display_particles = paired_particles
     else:
@@ -1103,7 +1125,9 @@ else:
         display_particles = all_particles
 
     # Determine if showing pairs BEFORE using in pagination
-    is_showing_pairs = show_duplicates_only and len(display_particles) > 0 and isinstance(display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
+    is_showing_pairs = show_duplicates_only and len(display_particles) > 0 and isinstance(display_particles[0],
+                                                                                          tuple) and isinstance(
+        display_particles[0][0], tuple)
 
     if all_particles:
         # Pagination - calculate based on what we're displaying
@@ -1174,129 +1198,135 @@ else:
                 with cols[i % 6]:
                     display_particle_crop(pidx, p)
 
-        # Full image viewer
-        for pidx, p in [(idx, p) for idx, p in page_particles]:
-            if st.session_state.get(f"show_full_{pidx}", False):
-                try:
-                    filename = p.get("tile_filename")
-                    if not filename:
-                        st.error("❌ Tile filename missing")
-                        continue
+        # Full image viewer - SKIP when showing pairs (they're already displayed inline)
+        if not is_showing_pairs:
+            for pidx, p in [(idx, p) for idx, p in page_particles]:
+                if st.session_state.get(f"show_full_{pidx}", False):
+                    try:
+                        filename = p.get("tile_filename")
+                        if not filename:
+                            st.error("❌ Tile filename missing")
+                            continue
 
-                    # Check if merged - show stitched image with red boundary
-                    if p.get("merged") and p.get("stitched_image") is not None:
-                        with st.expander(f"🔗 STITCHED PARTICLE: {p.get('tile_filename', '?')}", expanded=True):
-                            st.info("✅ Cut particle detected and merged")
+                        # Check if merged - show stitched image with red boundary
+                        if p.get("merged") and p.get("stitched_image") is not None:
+                            with st.expander(f"🔗 STITCHED PARTICLE: {p.get('tile_filename', '?')}", expanded=True):
+                                st.info("✅ Cut particle detected and merged")
 
-                            try:
-                                # Display the pre-stitched image (has red boundary line AND blue bounding box) ✅
-                                stitched_img = p.get("stitched_image")
-                                if isinstance(stitched_img, np.ndarray):
-                                    # Convert to Plotly for interactive zoom
-                                    stitched_pil = Image.fromarray(stitched_img.astype(np.uint8))
-                                    stitched_array = np.array(stitched_pil)
+                                try:
+                                    # Display the pre-stitched image (has red boundary line AND blue bounding box) ✅
+                                    stitched_img = p.get("stitched_image")
+                                    if isinstance(stitched_img, np.ndarray):
+                                        # Convert to Plotly for interactive zoom
+                                        stitched_pil = Image.fromarray(stitched_img.astype(np.uint8))
+                                        stitched_array = np.array(stitched_pil)
 
-                                    # Create interactive Plotly figure
-                                    fig_stitched = go.Figure()
-                                    fig_stitched.add_trace(go.Image(z=stitched_array, name="Stitched Particle"))
+                                        # Create interactive Plotly figure
+                                        fig_stitched = go.Figure()
+                                        fig_stitched.add_trace(go.Image(z=stitched_array, name="Stitched Particle"))
 
-                                    fig_stitched.update_layout(
-                                        title="🔗 Stitched Particle (Click & Drag to Zoom, Double-click to Reset)",
-                                        showlegend=False,
-                                        hovermode="closest",
-                                        margin=dict(b=0, l=0, r=0, t=50),
-                                        height=700,
-                                        xaxis=dict(showgrid=False),
-                                        yaxis=dict(showgrid=False)
-                                    )
-                                    fig_stitched.update_xaxes(scaleanchor="y", scaleratio=1)
-                                    fig_stitched.update_yaxes(scaleanchor="x", scaleratio=1, autorange="reversed")
+                                        fig_stitched.update_layout(
+                                            title="🔗 Stitched Particle (Click & Drag to Zoom, Double-click to Reset)",
+                                            showlegend=False,
+                                            hovermode="closest",
+                                            margin=dict(b=0, l=0, r=0, t=50),
+                                            height=700,
+                                            xaxis=dict(showgrid=False),
+                                            yaxis=dict(showgrid=False)
+                                        )
+                                        fig_stitched.update_xaxes(scaleanchor="y", scaleratio=1)
+                                        fig_stitched.update_yaxes(scaleanchor="x", scaleratio=1, autorange="reversed")
 
-                                    st.plotly_chart(fig_stitched)
+                                        st.plotly_chart(fig_stitched)
 
-                                    st.markdown(f"**🔴 Red line at x≈{p.get('boundary_line_pos', '?')}px = tile boundary | 🔵 Blue box = particle extent**")
+                                        st.markdown(
+                                            f"**🔴 Red line at x≈{p.get('boundary_line_pos', '?')}px = tile boundary | 🔵 Blue box = particle extent**")
 
-                                    # SIZING BOX - Show measurements
-                                    st.markdown("---")
-                                    st.markdown("### 📐 Measurements & Pixel Details")
+                                        # SIZING BOX - Show measurements
+                                        st.markdown("---")
+                                        st.markdown("### 📐 Measurements & Pixel Details")
 
-                                    col1, col2, col3, col4 = st.columns(4)
-                                    with col1:
-                                        st.metric("Original Diameter", f"{p.get('original_diameter_um', '?'):.1f}µm")
-                                    with col2:
-                                        st.metric("Stitched Diameter", f"{p.get('diameter_um', '?'):.1f}µm")
-                                    with col3:
-                                        st.metric("Size Change", f"{p.get('size_change_pct', 0):+.1f}%")
-                                    with col4:
-                                        st.metric("Match Score", f"{p.get('match_score', 0):.3f}")
+                                        col1, col2, col3, col4 = st.columns(4)
+                                        with col1:
+                                            st.metric("Original Diameter",
+                                                      f"{p.get('original_diameter_um', '?'):.1f}µm")
+                                        with col2:
+                                            st.metric("Stitched Diameter", f"{p.get('diameter_um', '?'):.1f}µm")
+                                        with col3:
+                                            st.metric("Size Change", f"{p.get('size_change_pct', 0):+.1f}%")
+                                        with col4:
+                                            st.metric("Match Score", f"{p.get('match_score', 0):.3f}")
 
-                                    # More details
-                                    st.markdown("---")
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        st.write(f"**Original Bbox:** {p.get('w', 0)}×{p.get('h', 0)}px")
-                                    with col2:
-                                        st.write(f"**Stitched Bbox:** {p.get('stitched_w', 0)}×{p.get('stitched_h', 0)}px")
-                                    with col3:
-                                        original_diag = np.sqrt(p.get('w', 0)**2 + p.get('h', 0)**2) if p.get('w', 0) > 0 else 0
-                                        st.write(f"**Diagonal:** {original_diag:.0f}px → {p.get('stitched_diagonal_px', 0):.0f}px")
+                                        # More details
+                                        st.markdown("---")
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.write(f"**Original Bbox:** {p.get('w', 0)}×{p.get('h', 0)}px")
+                                        with col2:
+                                            st.write(
+                                                f"**Stitched Bbox:** {p.get('stitched_w', 0)}×{p.get('stitched_h', 0)}px")
+                                        with col3:
+                                            original_diag = np.sqrt(p.get('w', 0) ** 2 + p.get('h', 0) ** 2) if p.get(
+                                                'w', 0) > 0 else 0
+                                            st.write(
+                                                f"**Diagonal:** {original_diag:.0f}px → {p.get('stitched_diagonal_px', 0):.0f}px")
 
-                                    col1, col2, col3 = st.columns(3)
-                                    with col1:
-                                        st.write(f"**Overlap:** {p.get('overlap_pixels', 0)}px")
-                                    with col2:
-                                        st.write(f"**Direction:** {p.get('stitch_direction', '?')}")
-                                    with col3:
-                                        st.write(f"**Class:** {p.get('class', '?')} | {p.get('size_bin', '?')}")
-                                else:
-                                    st.warning("❌ Stitched image not available")
-                            except Exception as e:
-                                st.error(f"❌ Could not display stitched image: {str(e)[:100]}")
+                                        col1, col2, col3 = st.columns(3)
+                                        with col1:
+                                            st.write(f"**Overlap:** {p.get('overlap_pixels', 0)}px")
+                                        with col2:
+                                            st.write(f"**Direction:** {p.get('stitch_direction', '?')}")
+                                        with col3:
+                                            st.write(f"**Class:** {p.get('class', '?')} | {p.get('size_bin', '?')}")
+                                    else:
+                                        st.warning("❌ Stitched image not available")
+                                except Exception as e:
+                                    st.error(f"❌ Could not display stitched image: {str(e)[:100]}")
 
-                    # Normal single-tile view
-                    elif filename not in st.session_state.tile_files:
-                        st.warning(f"❌ Tile not in upload: {filename}")
-                    else:
-                        with st.expander(f"Full Image: {filename}", expanded=True):
-                            try:
-                                file_obj = st.session_state.tile_files[filename]
-                                tile_img = Image.open(file_obj).convert('RGB')
-                                tile_img = np.array(tile_img)
+                        # Normal single-tile view
+                        elif filename not in st.session_state.tile_files:
+                            st.warning(f"❌ Tile not in upload: {filename}")
+                        else:
+                            with st.expander(f"Full Image: {filename}", expanded=True):
+                                try:
+                                    file_obj = st.session_state.tile_files[filename]
+                                    tile_img = Image.open(file_obj).convert('RGB')
+                                    tile_img = np.array(tile_img)
 
-                                fig = go.Figure()
-                                fig.add_trace(go.Image(z=tile_img, name="Image"))
+                                    fig = go.Figure()
+                                    fig.add_trace(go.Image(z=tile_img, name="Image"))
 
-                                # Get box coordinates safely
-                                x = p.get("x", 0)
-                                y = p.get("y", 0)
-                                w = p.get("w", 0)
-                                h = p.get("h", 0)
+                                    # Get box coordinates safely
+                                    x = p.get("x", 0)
+                                    y = p.get("y", 0)
+                                    w = p.get("w", 0)
+                                    h = p.get("h", 0)
 
-                                if x and y and w and h:
-                                    fig.add_shape(type="rect", x0=x, y0=y, x1=x+w, y1=y+h,
-                                               line=dict(color="rgb(0, 100, 255)", width=3))
+                                    if x and y and w and h:
+                                        fig.add_shape(type="rect", x0=x, y0=y, x1=x + w, y1=y + h,
+                                                      line=dict(color="rgb(0, 100, 255)", width=3))
 
-                                fig.update_layout(
-                                    title=f"{filename} | {p.get('class', '?')} ({p.get('size_bin', '?')}) {p.get('diameter_um', '?')}µm",
-                                    showlegend=False, hovermode="closest",
-                                    margin=dict(b=0, l=0, r=0, t=40), height=600)
-                                fig.update_xaxes(scaleanchor="y", scaleratio=1)
-                                fig.update_yaxes(scaleanchor="x", scaleratio=1)
+                                    fig.update_layout(
+                                        title=f"{filename} | {p.get('class', '?')} ({p.get('size_bin', '?')}) {p.get('diameter_um', '?')}µm",
+                                        showlegend=False, hovermode="closest",
+                                        margin=dict(b=0, l=0, r=0, t=40), height=600)
+                                    fig.update_xaxes(scaleanchor="y", scaleratio=1)
+                                    fig.update_yaxes(scaleanchor="x", scaleratio=1)
 
-                                st.plotly_chart(fig)
+                                    st.plotly_chart(fig)
 
-                                c1, c2, c3 = st.columns(3)
-                                with c1:
-                                    st.write(f"**Class:** {p.get('class', '?')}")
-                                with c2:
-                                    st.write(f"**Size:** {p.get('diameter_um', '?')}µm ({p.get('size_bin', '?')})")
-                                with c3:
-                                    st.write(f"**Method:** {p.get('size_method', '?')}")
-                            except Exception as e:
-                                st.error(f"❌ Load error: {str(e)[:60]}")
+                                    c1, c2, c3 = st.columns(3)
+                                    with c1:
+                                        st.write(f"**Class:** {p.get('class', '?')}")
+                                    with c2:
+                                        st.write(f"**Size:** {p.get('diameter_um', '?')}µm ({p.get('size_bin', '?')})")
+                                    with c3:
+                                        st.write(f"**Method:** {p.get('size_method', '?')}")
+                                except Exception as e:
+                                    st.error(f"❌ Load error: {str(e)[:60]}")
 
-                except Exception as e:
-                    st.error(f"❌ Unexpected error: {str(e)[:60]}")
+                    except Exception as e:
+                        st.error(f"❌ Unexpected error: {str(e)[:60]}")
 
     st.divider()
 
