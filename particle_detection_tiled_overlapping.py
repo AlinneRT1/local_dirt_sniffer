@@ -359,12 +359,11 @@ with st.sidebar:
 
                     # Load all tile images for stitching
                     tile_images = {}
-                    for tile_meta in st.session_state.tile_metadata:
-                        tile_idx = tile_meta["tile_id"]
+                    for tile_idx, tile_meta in enumerate(st.session_state.tile_metadata):
                         filename = tile_meta["filename"]
                         try:
                             tile_file = st.session_state.tile_files[filename]
-                            tile_img = Image.open(tile_file).convert('BGR')
+                            tile_img = Image.open(tile_file).convert('RGB')  # PIL uses RGB, not BGR
                             tile_images[tile_idx] = np.array(tile_img)
                         except Exception as e:
                             st.warning(f"Could not load tile {filename} for stitching: {e}")
@@ -390,6 +389,7 @@ with st.sidebar:
                                 kept_p = matched_particles[kept_particle_idx]
                                 kept_p["diameter_um"] = stitch_info["stitched_diameter_um"]
                                 kept_p["stitched"] = True
+                                kept_p["merged"] = True  # Mark as merged for gallery filter
                                 kept_p["original_diameter_um"] = stitch_info["original_diameter_um"]
                                 kept_p["size_change_pct"] = stitch_info["size_change_pct"]
 
@@ -777,18 +777,36 @@ else:
     with col5:
         sort_by = st.selectbox("Sort:", ["Confidence ↓", "Confidence ↑", "Size ↓", "Size ↑"], index=0)
     with col6:
+        show_duplicates_only = st.checkbox("Show duplicates only")
+
+    # Pagination row
+    col_p1, col_p2, col_p3, col_p4, col_p5, col_p6 = st.columns(6)
+    with col_p6:
         items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
 
     # Filter particles
     all_particles = []
     if st.session_state.results is not None:
         for idx, p in enumerate(st.session_state.results):
-            if not p.get("deleted") and p.get("class") in filter_class and p.get("size_bin") in filter_bins:
-                if show_seams_only and not p.get("at_seam"):
+            # Filter by deleted status
+            if show_duplicates_only:
+                # Show ONLY deleted particles
+                if not p.get("deleted"):
                     continue
-                if show_merged_only and not p.get("merged"):
+            else:
+                # Show only ACTIVE particles (default)
+                if p.get("deleted"):
                     continue
-                all_particles.append((idx, p))
+
+            if p.get("class") not in filter_class or p.get("size_bin") not in filter_bins:
+                continue
+
+            if show_seams_only and not p.get("at_seam"):
+                continue
+            if show_merged_only and not p.get("merged"):
+                continue
+
+            all_particles.append((idx, p))
 
     # Apply sorting
     if sort_by == "Confidence ↓":
@@ -862,9 +880,18 @@ else:
                     method = p.get("size_method", "?")
                     caption = f"{p.get('class', '?')} | {p.get('size_bin', '?')}\n{p.get('diameter_um', '?'):.1f}µm ({method})\nConf: {p.get('confidence', 0):.2f}"
 
+                    # Mark deleted/duplicate particles
+                    if p.get("deleted"):
+                        caption = f"❌ DUPLICATE\n{caption}\n(Removed - lower confidence)"
+
                     # Mark merged particles
-                    if p.get("merged"):
+                    elif p.get("merged"):
                         caption = f"🔗 MERGED\n{caption}\n✅ Size recalculated"
+
+                    # Add stitched marker if applicable
+                    if p.get("stitched"):
+                        size_change = p.get("size_change_pct", 0)
+                        caption += f"\n🔗 Stitched ({size_change:+.0f}%)"
 
                     # Add seam warning if applicable
                     if p.get("at_seam") and not p.get("merged"):
