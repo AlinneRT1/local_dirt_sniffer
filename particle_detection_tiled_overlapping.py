@@ -23,6 +23,8 @@ from PIL import Image, ImageDraw
 import pandas as pd
 import json
 import os
+import io
+import base64
 import tempfile
 from datetime import datetime
 from ultralytics import YOLO
@@ -256,6 +258,75 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
     progress_bar = st.progress(0)
     status = st.empty()
 
+    # If no metadata, just iterate over uploaded files in order
+    if not tile_metadata:
+        file_list = list(tile_files.keys())
+        for idx, filename in enumerate(file_list):
+            status.text(f"Detecting {idx + 1}/{len(file_list)}: {filename}")
+
+            try:
+                file_obj = tile_files[filename]
+                img_pil = Image.open(file_obj)
+                if img_pil.mode != 'RGB':
+                    img_pil = img_pil.convert('RGB')
+                tile_img = np.array(img_pil)
+            except Exception as e:
+                st.warning(f"Failed to load {filename}: {e}")
+                progress_bar.progress((idx + 1) / len(file_list))
+                continue
+
+            # Convert RGB to BGR for YOLO
+            tile_img_bgr = cv2.cvtColor(tile_img, cv2.COLOR_RGB2BGR)
+
+            # Detect
+            try:
+                results = model(tile_img_bgr, iou=0.45, conf=0.02, verbose=False, device=DEVICE)
+            except Exception as e:
+                st.warning(f"Detection failed on {filename}: {e}")
+                progress_bar.progress((idx + 1) / len(file_list))
+                continue
+
+            # Extract particles
+            for r in results:
+                if r.boxes is None:
+                    continue
+
+                for i, (box, cls, conf) in enumerate(zip(r.boxes.xyxy, r.boxes.cls, r.boxes.conf)):
+                    x1, y1, x2, y2 = [int(v) for v in box.tolist()]
+
+                    # Get mask
+                    try:
+                        mask = r.masks.data[i].cpu().numpy() if hasattr(r.masks.data[i], 'cpu') else r.masks.data[i]
+                    except:
+                        mask = None
+
+                    diameter_um, method = calculate_particle_size_accurate(mask, CALIBRATION_UM_PER_PIXEL)
+                    if diameter_um is None:
+                        diameter_um = 0
+
+                    class_name = ["Fiber", "Glass", "Metallic", "Other"][int(cls)]
+
+                    all_particles.append({
+                        "tile_id": idx,
+                        "tile_filename": filename,
+                        "x": x1,
+                        "y": y1,
+                        "w": x2 - x1,
+                        "h": y2 - y1,
+                        "class": class_name,
+                        "confidence": float(conf),
+                        "diameter_um": diameter_um,
+                        "size_method": method,
+                        "size_bin": get_size_bin(diameter_um),
+                    })
+
+            progress_bar.progress((idx + 1) / len(file_list))
+
+        progress_bar.empty()
+        status.empty()
+        return all_particles
+
+    # Otherwise use metadata (tiled or stitched mode)
     for idx, tile_meta in enumerate(tile_metadata):
         filename = tile_meta.get('source_file') or tile_meta.get('filename')  # Support both field names
         if not filename:
@@ -398,14 +469,6 @@ def display_particle_crop(pidx, p):
             caption += f"\n⚠️ At seams"
 
         st.caption(caption)
-
-        # SIZING BOX - Show measurements
-        st.markdown("**📏 Measurements:**")
-        st.write(f"Diameter: {p.get('diameter_um', '?'):.1f}µm")
-        if p.get("stitched"):
-            st.write(f"Original: {p.get('original_diameter_um', '?'):.1f}µm")
-            st.write(f"Change: {p.get('size_change_pct', 0):+.1f}%")
-        st.write(f"Bbox: {p.get('w', 0)}×{p.get('h', 0)}px")
 
         # Show duplicate reason if applicable
         if p.get("deleted") and p.get("duplicate_reason"):
@@ -577,7 +640,8 @@ with st.sidebar:
     st.markdown("---")
     st.header("📤 Upload Tiles")
 
-    st.write("**Step 1: Upload manifest.json**")
+    st.write("**Step 1: Upload manifest.json (optional)**")
+    st.caption("For raw tiles with no metadata, leave this empty")
     manifest_file = st.file_uploader("Manifest:", type=["json"], key="manifest")
 
     st.write("**Step 2: Upload tile images**")
@@ -588,23 +652,30 @@ with st.sidebar:
         key="tiles"
     )
 
-    if manifest_file and tile_files and st.button("📋 Load"):
+    if tile_files and st.button("📋 Load"):
         try:
-            manifest = json.load(manifest_file)
-            tile_metadata = manifest.get("tiles", [])
-
             file_map = {f.name: f for f in tile_files}
 
-            st.session_state.tile_metadata = tile_metadata
+            if manifest_file:
+                # Manifest provided - use metadata
+                manifest = json.load(manifest_file)
+                tile_metadata = manifest.get("tiles", [])
+                st.session_state.tile_metadata = tile_metadata
+                st.success(f"✅ Loaded {len(tile_metadata)} tiles with metadata")
+            else:
+                # No manifest - raw tiles mode
+                tile_metadata = []
+                st.session_state.tile_metadata = []
+                st.success(f"✅ Loaded {len(file_map)} raw tile images (no metadata)")
+
             st.session_state.tile_files = file_map
 
-            st.success(f"✅ Ready to detect!")
         except Exception as e:
             st.error(f"Error: {e}")
 
     st.divider()
 
-    if st.session_state.tile_metadata:
+    if st.session_state.tile_files:
         if st.button("🔍 Run Inference"):
             model = load_model()
             if model is None:
@@ -776,6 +847,11 @@ else:
     with col6:
         show_duplicates_only = st.checkbox("Show duplicates only")
 
+    # Over-labeled filter row
+    col_ol1, col_ol2 = st.columns([1, 5])
+    with col_ol1:
+        show_overlabel_only = st.checkbox("Over-labeled only")
+
     # Pagination row
     col_p1, col_p2, col_p3, col_p4, col_p5, col_p6 = st.columns(6)
     with col_p6:
@@ -798,7 +874,11 @@ else:
 
         for idx, p in enumerate(st.session_state.results):
             # Filter by deleted status
-            if show_duplicates_only:
+            if show_overlabel_only:
+                # Show ONLY over-labeled particles (deleted AND location_duplicate type)
+                if not p.get("deleted") or p.get("duplicate_type") != "location_duplicate":
+                    continue
+            elif show_duplicates_only:
                 # Show ONLY deleted particles - NO OTHER FILTERS
                 if not p.get("deleted"):
                     continue
@@ -829,9 +909,8 @@ else:
     elif sort_by == "Size ↑":
         all_particles.sort(key=lambda x: x[1].get('diameter_um', 0), reverse=False)
 
-    # If showing duplicates only, pair them with their matches
-    if show_duplicates_only:
-        # Find duplicate pairs: deleted particle with its kept counterpart
+    # If showing duplicates or over-labeled only, pair them with their matches/kept versions
+    if show_duplicates_only or show_overlabel_only:
         paired_particles = []
         seen_matches = set()
         unmatched_count = 0
@@ -840,23 +919,43 @@ else:
             if not p.get("deleted"):
                 continue
 
-            matched_idx = p.get("matched_with")
-            if matched_idx is not None and matched_idx not in seen_matches:
-                # Find the kept particle from ALL results (not just filtered all_particles)
-                kept_p = None
-                if matched_idx < len(st.session_state.results):
-                    kept_p = st.session_state.results[matched_idx]
+            # For duplicates: match via matched_with field
+            # For over-labeling: look for particles at same location
+            if show_duplicates_only:
+                matched_idx = p.get("matched_with")
+                if matched_idx is not None and matched_idx not in seen_matches:
+                    kept_p = None
+                    if matched_idx < len(st.session_state.results):
+                        kept_p = st.session_state.results[matched_idx]
 
-                if kept_p:
-                    # Store as pair: (kept, deleted)
-                    paired_particles.append(((matched_idx, kept_p), (idx, p)))
-                    seen_matches.add(matched_idx)
-            else:
-                # No matched_with set
-                unmatched_count += 1
+                    if kept_p:
+                        paired_particles.append(((matched_idx, kept_p), (idx, p)))
+                        seen_matches.add(matched_idx)
+                else:
+                    unmatched_count += 1
+
+            elif show_overlabel_only:
+                # For over-labeling, find the kept particle at same location
+                for kept_idx, kept_p in enumerate(st.session_state.results):
+                    if kept_p.get("deleted"):
+                        continue
+                    if kept_idx in seen_matches:
+                        continue
+
+                    # Check if same location (within 20px)
+                    dist = ((p['x'] - kept_p['x'])**2 + (p['y'] - kept_p['y'])**2)**0.5
+                    if dist < 20:
+                        paired_particles.append(((kept_idx, kept_p), (idx, p)))
+                        seen_matches.add(kept_idx)
+                        break
+                else:
+                    unmatched_count += 1
 
         # Debug info
-        st.info(f"✅ Found {len(paired_particles)} duplicate pairs | ❌ {unmatched_count} deleted particles without match link")
+        if show_duplicates_only:
+            st.info(f"✅ Found {len(paired_particles)} duplicate pairs | ❌ {unmatched_count} deleted particles without match link")
+        else:
+            st.info(f"✅ Found {len(paired_particles)} over-labeled pairs | ❌ {unmatched_count} deleted particles without match link")
 
         display_particles = paired_particles
     else:
@@ -864,7 +963,7 @@ else:
         display_particles = all_particles
 
     # Determine if showing pairs BEFORE using in pagination
-    is_showing_pairs = show_duplicates_only and len(display_particles) > 0 and isinstance(display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
+    is_showing_pairs = (show_duplicates_only or show_overlabel_only) and len(display_particles) > 0 and isinstance(display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
 
     if all_particles:
         # Pagination - calculate based on what we're displaying
@@ -874,7 +973,8 @@ else:
             total_pairs = len(display_particles)
             total_pages = max(1, (total_pairs + pairs_per_page - 1) // pairs_per_page)
 
-            st.write(f"Showing {total_pairs} duplicate pairs ({total_pairs * 2} items)")
+            pair_type = "over-labeled" if show_overlabel_only else "duplicate"
+            st.write(f"Showing {total_pairs} {pair_type} pairs ({total_pairs * 2} items)")
         else:
             # For regular: items_per_page particles per page
             total_pages = max(1, (len(display_particles) + items_per_page - 1) // items_per_page)
@@ -1013,6 +1113,162 @@ else:
                                             st.write(f"**Direction:** {p.get('stitch_direction', '?')}")
                                         with col3:
                                             st.write(f"**Class:** {p.get('class', '?')} | {p.get('size_bin', '?')}")
+
+                                        # LINE MEASUREMENT TOOL FOR STITCHED - SIMPLE CLICKABLE IMAGE
+                                        st.markdown("---")
+                                        st.subheader("📏 Resize Stitched Particle")
+                                        st.write("**Just click on the image twice: first click = red dot, second click = green dot**")
+
+                                        measure_key_s = f"measure_stitch_{pidx}"
+                                        if measure_key_s not in st.session_state:
+                                            st.session_state[measure_key_s] = []
+
+                                        points_s = st.session_state[measure_key_s]
+
+                                        # Create canvas with JavaScript click detection
+                                        img_pil_s = Image.fromarray(stitched_img.astype(np.uint8))
+                                        buf_s = io.BytesIO()
+                                        img_pil_s.save(buf_s, format="PNG")
+                                        img_base64_s = base64.b64encode(buf_s.getvalue()).decode()
+
+                                        html_canvas_s = f"""
+                                        <style>
+                                        #measureCanvasStitch {{
+                                            cursor: crosshair;
+                                            border: 3px solid #ccc;
+                                            display: block;
+                                            max-width: 100%;
+                                            height: auto;
+                                        }}
+                                        #coordsStitch {{
+                                            font-family: monospace;
+                                            margin-top: 10px;
+                                            font-size: 14px;
+                                            color: #333;
+                                        }}
+                                        </style>
+                                        <canvas id="measureCanvasStitch" width="{stitched_img.shape[1]}" height="{stitched_img.shape[0]}"></canvas>
+                                        <p id="coordsStitch">Click image to add points (need 2)</p>
+                                        <button id="confirmBtnStitch" style="margin-top: 10px; padding: 10px 20px; font-size: 14px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 4px;">Confirm Points</button>
+                                        <script>
+                                        const canvasS = document.getElementById('measureCanvasStitch');
+                                        const ctxS = canvasS.getContext('2d');
+                                        const coordsElS = document.getElementById('coordsStitch');
+                                        const confirmBtnS = document.getElementById('confirmBtnStitch');
+                                        const imgS = new Image();
+                                        
+                                        let clickPointsS = [];
+                                        
+                                        imgS.onload = function() {{
+                                            ctxS.drawImage(imgS, 0, 0);
+                                            redrawS();
+                                        }};
+                                        imgS.src = 'data:image/png;base64,{img_base64_s}';
+                                        
+                                        function redrawS() {{
+                                            ctxS.drawImage(imgS, 0, 0);
+                                            
+                                            // Draw existing points
+                                            clickPointsS.forEach((p, i) => {{
+                                                const color = i === 0 ? 'red' : 'green';
+                                                ctxS.fillStyle = color;
+                                                ctxS.beginPath();
+                                                ctxS.arc(p.x, p.y, 12, 0, 2*Math.PI);
+                                                ctxS.fill();
+                                                ctxS.strokeStyle = 'white';
+                                                ctxS.lineWidth = 2;
+                                                ctxS.stroke();
+                                            }});
+                                            
+                                            // Draw line if 2 points
+                                            if (clickPointsS.length === 2) {{
+                                                ctxS.strokeStyle = 'orange';
+                                                ctxS.lineWidth = 4;
+                                                ctxS.beginPath();
+                                                ctxS.moveTo(clickPointsS[0].x, clickPointsS[0].y);
+                                                ctxS.lineTo(clickPointsS[1].x, clickPointsS[1].y);
+                                                ctxS.stroke();
+                                            }}
+                                        }}
+                                        
+                                        canvasS.addEventListener('click', function(e) {{
+                                            if (clickPointsS.length >= 2) return;
+                                            
+                                            const rect = canvasS.getBoundingClientRect();
+                                            const x = Math.round((e.clientX - rect.left) * canvasS.width / rect.width);
+                                            const y = Math.round((e.clientY - rect.top) * canvasS.height / rect.height);
+                                            
+                                            clickPointsS.push({{x: x, y: y}});
+                                            
+                                            if (clickPointsS.length === 1) {{
+                                                coordsElS.textContent = `Point 1: (${{x}}, ${{y}}) - click again for point 2`;
+                                            }} else {{
+                                                const dx = clickPointsS[1].x - clickPointsS[0].x;
+                                                const dy = clickPointsS[1].y - clickPointsS[0].y;
+                                                const dist = Math.sqrt(dx*dx + dy*dy);
+                                                coordsElS.textContent = `Points ready! Distance: ${{dist.toFixed(1)}}px | Click "Confirm Points" button`;
+                                            }}
+                                            
+                                            redrawS();
+                                        }});
+                                        
+                                        confirmBtnS.addEventListener('click', function() {{
+                                            if (clickPointsS.length === 2) {{
+                                                window.confirmedPointsStitch_{pidx} = clickPointsS;
+                                                coordsElS.textContent = `✅ Points confirmed: (${{clickPointsS[0].x}}, ${{clickPointsS[0].y}}) → (${{clickPointsS[1].x}}, ${{clickPointsS[1].y}})`;
+                                                confirmBtnS.disabled = true;
+                                                confirmBtnS.style.background = '#ccc';
+                                            }} else {{
+                                                coordsElS.textContent = '❌ Need 2 points before confirming';
+                                            }}
+                                        }});
+                                        </script>
+                                        """
+
+                                        st.components.v1.html(html_canvas_s, height=700)
+
+                                        # After canvas, input coordinates
+                                        col_manual1s, col_manual2s = st.columns(2)
+
+                                        with col_manual1s:
+                                            st.write("**Or enter coordinates:**")
+                                            col_mx1s, col_my1s = st.columns(2)
+                                            with col_mx1s:
+                                                mx1s = st.number_input("x1:", min_value=0, max_value=stitched_img.shape[1], key=f"mx1s_{pidx}")
+                                            with col_my1s:
+                                                my1s = st.number_input("y1:", min_value=0, max_value=stitched_img.shape[0], key=f"my1s_{pidx}")
+
+                                        with col_manual2s:
+                                            col_mx2s, col_my2s = st.columns(2)
+                                            with col_mx2s:
+                                                mx2s = st.number_input("x2:", min_value=0, max_value=stitched_img.shape[1], key=f"mx2s_{pidx}")
+                                            with col_my2s:
+                                                my2s = st.number_input("y2:", min_value=0, max_value=stitched_img.shape[0], key=f"my2s_{pidx}")
+
+                                        # Use coordinates
+                                        final_p1s = (mx1s, my1s)
+                                        final_p2s = (mx2s, my2s)
+
+                                        # Calculate only if we have non-zero points
+                                        if final_p1s != (0, 0) and final_p2s != (0, 0):
+                                            pixel_length_s = np.sqrt((final_p2s[0] - final_p1s[0])**2 + (final_p2s[1] - final_p1s[1])**2)
+                                            new_diameter_um_s = pixel_length_s * CALIBRATION_UM_PER_PIXEL
+
+                                            col_ress1, col_ress2 = st.columns(2)
+                                            with col_ress1:
+                                                st.metric("📐 Line Length", f"{pixel_length_s:.1f} px")
+                                            with col_ress2:
+                                                st.metric("📏 New Diameter", f"{new_diameter_um_s:.1f} µm")
+
+                                            # RESIZE BUTTON
+                                            if st.button(f"✅ APPLY RESIZE", key=f"apply_stitch_{pidx}", use_container_width=True):
+                                                push_undo()
+                                                st.session_state.results[pidx]["diameter_um"] = new_diameter_um_s
+                                                st.session_state.results[pidx]["size_bin"] = get_size_bin(new_diameter_um_s)
+                                                st.session_state.results[pidx]["size_method"] = "manual_line_stitched"
+                                                st.session_state[f"show_full_{pidx}"] = False
+                                                st.success(f"✅ Resized to {new_diameter_um_s:.1f}µm!")
+                                                st.rerun()
                                     else:
                                         st.warning("❌ Stitched image not available")
                                 except Exception as e:
@@ -1057,6 +1313,163 @@ else:
                                         st.write(f"**Size:** {p.get('diameter_um', '?')}µm ({p.get('size_bin', '?')})")
                                     with c3:
                                         st.write(f"**Method:** {p.get('size_method', '?')}")
+
+                                    # LINE MEASUREMENT TOOL - SIMPLE CLICKABLE IMAGE
+                                    st.markdown("---")
+                                    st.subheader("📏 Resize Particle")
+                                    st.write("**Just click on the image twice: first click = red dot, second click = green dot**")
+
+                                    measure_key = f"measure_{pidx}"
+                                    if measure_key not in st.session_state:
+                                        st.session_state[measure_key] = []
+
+                                    points = st.session_state[measure_key]
+
+                                    # Create canvas with JavaScript click detection
+                                    import base64
+                                    img_pil = Image.fromarray(tile_img.astype(np.uint8))
+                                    buf = io.BytesIO()
+                                    img_pil.save(buf, format="PNG")
+                                    img_base64 = base64.b64encode(buf.getvalue()).decode()
+
+                                    html_canvas = f"""
+                                    <style>
+                                    #measureCanvas {{
+                                        cursor: crosshair;
+                                        border: 3px solid #ccc;
+                                        display: block;
+                                        max-width: 100%;
+                                        height: auto;
+                                    }}
+                                    #coords {{
+                                        font-family: monospace;
+                                        margin-top: 10px;
+                                        font-size: 14px;
+                                        color: #333;
+                                    }}
+                                    </style>
+                                    <canvas id="measureCanvas" width="{tile_img.shape[1]}" height="{tile_img.shape[0]}"></canvas>
+                                    <p id="coords">Click image to add points (need 2)</p>
+                                    <button id="confirmBtn" style="margin-top: 10px; padding: 10px 20px; font-size: 14px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 4px;">Confirm Points</button>
+                                    <script>
+                                    const canvas = document.getElementById('measureCanvas');
+                                    const ctx = canvas.getContext('2d');
+                                    const coordsEl = document.getElementById('coords');
+                                    const confirmBtn = document.getElementById('confirmBtn');
+                                    const img = new Image();
+                                    
+                                    let clickPoints = [];
+                                    
+                                    img.onload = function() {{
+                                        ctx.drawImage(img, 0, 0);
+                                        redraw();
+                                    }};
+                                    img.src = 'data:image/png;base64,{img_base64}';
+                                    
+                                    function redraw() {{
+                                        ctx.drawImage(img, 0, 0);
+                                        
+                                        // Draw existing points
+                                        clickPoints.forEach((p, i) => {{
+                                            const color = i === 0 ? 'red' : 'green';
+                                            ctx.fillStyle = color;
+                                            ctx.beginPath();
+                                            ctx.arc(p.x, p.y, 12, 0, 2*Math.PI);
+                                            ctx.fill();
+                                            ctx.strokeStyle = 'white';
+                                            ctx.lineWidth = 2;
+                                            ctx.stroke();
+                                        }});
+                                        
+                                        // Draw line if 2 points
+                                        if (clickPoints.length === 2) {{
+                                            ctx.strokeStyle = 'orange';
+                                            ctx.lineWidth = 4;
+                                            ctx.beginPath();
+                                            ctx.moveTo(clickPoints[0].x, clickPoints[0].y);
+                                            ctx.lineTo(clickPoints[1].x, clickPoints[1].y);
+                                            ctx.stroke();
+                                        }}
+                                    }}
+                                    
+                                    canvas.addEventListener('click', function(e) {{
+                                        if (clickPoints.length >= 2) return;
+                                        
+                                        const rect = canvas.getBoundingClientRect();
+                                        const x = Math.round((e.clientX - rect.left) * canvas.width / rect.width);
+                                        const y = Math.round((e.clientY - rect.top) * canvas.height / rect.height);
+                                        
+                                        clickPoints.push({{x: x, y: y}});
+                                        
+                                        if (clickPoints.length === 1) {{
+                                            coordsEl.textContent = `Point 1: (${{x}}, ${{y}}) - click again for point 2`;
+                                        }} else {{
+                                            const dx = clickPoints[1].x - clickPoints[0].x;
+                                            const dy = clickPoints[1].y - clickPoints[0].y;
+                                            const dist = Math.sqrt(dx*dx + dy*dy);
+                                            coordsEl.textContent = `Points ready! Distance: ${{dist.toFixed(1)}}px | Click "Confirm Points" button`;
+                                        }}
+                                        
+                                        redraw();
+                                    }});
+                                    
+                                    confirmBtn.addEventListener('click', function() {{
+                                        if (clickPoints.length === 2) {{
+                                            window.confirmedPoints_{pidx} = clickPoints;
+                                            coordsEl.textContent = `✅ Points confirmed: (${{clickPoints[0].x}}, ${{clickPoints[0].y}}) → (${{clickPoints[1].x}}, ${{clickPoints[1].y}})`;
+                                            confirmBtn.disabled = true;
+                                            confirmBtn.style.background = '#ccc';
+                                        }} else {{
+                                            coordsEl.textContent = '❌ Need 2 points before confirming';
+                                        }}
+                                    }});
+                                    </script>
+                                    """
+
+                                    st.components.v1.html(html_canvas, height=700)
+
+                                    # After canvas, check if points were confirmed and add them to session state
+                                    col_manual1, col_manual2 = st.columns(2)
+
+                                    with col_manual1:
+                                        st.write("**Or enter coordinates:**")
+                                        col_mx1, col_my1 = st.columns(2)
+                                        with col_mx1:
+                                            mx1 = st.number_input("x1:", min_value=0, max_value=tile_img.shape[1], key=f"mx1_{pidx}")
+                                        with col_my1:
+                                            my1 = st.number_input("y1:", min_value=0, max_value=tile_img.shape[0], key=f"my1_{pidx}")
+
+                                    with col_manual2:
+                                        col_mx2, col_my2 = st.columns(2)
+                                        with col_mx2:
+                                            mx2 = st.number_input("x2:", min_value=0, max_value=tile_img.shape[1], key=f"mx2_{pidx}")
+                                        with col_my2:
+                                            my2 = st.number_input("y2:", min_value=0, max_value=tile_img.shape[0], key=f"my2_{pidx}")
+
+                                    # Use manual inputs
+                                    final_p1 = (mx1, my1)
+                                    final_p2 = (mx2, my2)
+
+                                    # Calculate only if we have non-zero points
+                                    if final_p1 != (0, 0) and final_p2 != (0, 0):
+                                        pixel_length = np.sqrt((final_p2[0] - final_p1[0])**2 + (final_p2[1] - final_p1[1])**2)
+                                        new_diameter_um = pixel_length * CALIBRATION_UM_PER_PIXEL
+
+                                        col_res1, col_res2 = st.columns(2)
+                                        with col_res1:
+                                            st.metric("📐 Line Length", f"{pixel_length:.1f} px")
+                                        with col_res2:
+                                            st.metric("📏 New Diameter", f"{new_diameter_um:.1f} µm")
+
+                                        # RESIZE BUTTON
+                                        if st.button(f"✅ APPLY RESIZE", key=f"apply_{pidx}", use_container_width=True):
+                                            push_undo()
+                                            st.session_state.results[pidx]["diameter_um"] = new_diameter_um
+                                            st.session_state.results[pidx]["size_bin"] = get_size_bin(new_diameter_um)
+                                            st.session_state.results[pidx]["size_method"] = "manual_line"
+                                            st.session_state[f"show_full_{pidx}"] = False
+                                            st.success(f"✅ Resized to {new_diameter_um:.1f}µm!")
+                                            st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ Load error: {str(e)[:60]}")
 

@@ -1,5 +1,7 @@
 opencv-python-headless
 streamlit
+streamlit-drawable-canvas
+streamlit-plotly-events
 numpy
 Pillow
 pandas
