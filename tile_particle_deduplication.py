@@ -144,254 +144,7 @@ def get_size_bin(diameter_um):
             return label
     return SIZE_BINS[-1][0]
 
-def simple_tile_dedup(raw_particles, tile_metadata):
-    """
-    Simple tile-focused dedup:
-    1. IOU dedup - remove overlapping particles in same tile
-    2. Neighbor scoring - score edge particles against neighbors
-    3. Over-labeling - same spot, different class
-
-    Returns particles with:
-    - deleted=True for overlaps and over-labeling
-    - is_duplicate=True with score for edge particles matching neighbors
-    """
-    particles = [p.copy() for p in raw_particles]
-
-    # Initialize deleted field for all particles
-    for p in particles:
-        if 'deleted' not in p:
-            p['deleted'] = False
-
-    # If no tile metadata, just do over-labeling
-    if not tile_metadata:
-        st.write("**No manifest - over-labeling detection only**")
-        overlabel_removed = 0
-
-        for i, p1 in enumerate(particles):
-            if p1.get('deleted'):
-                continue
-
-            for j, p2 in enumerate(particles[i+1:], start=i+1):
-                if p2.get('deleted'):
-                    continue
-
-                # Different class
-                if p1.get('class') == p2.get('class'):
-                    continue
-
-                # Same spot (within 20px)
-                cx1 = p1.get('x', 0) + p1.get('w', 0)/2
-                cy1 = p1.get('y', 0) + p1.get('h', 0)/2
-                cx2 = p2.get('x', 0) + p2.get('w', 0)/2
-                cy2 = p2.get('y', 0) + p2.get('h', 0)/2
-
-                dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
-
-                if dist < 20:
-                    if p1['confidence'] > p2['confidence']:
-                        particles[j]['deleted'] = True
-                        particles[j]['duplicate_type'] = 'location_duplicate'
-                        overlabel_removed += 1
-                    else:
-                        particles[i]['deleted'] = True
-                        particles[i]['duplicate_type'] = 'location_duplicate'
-                        overlabel_removed += 1
-                        break
-
-        st.write(f"  ✅ Removed {overlabel_removed} over-labeled particles")
-        return particles, {"iou_removed": 0, "edge_duplicates_found": 0, "overlabel_removed": overlabel_removed}
-
-    # Build neighbor map
-    neighbors_map = {}
-    for tile in tile_metadata:
-        fname = tile.get('filename')
-        neighbors_map[fname] = tile.get('neighbors', {})
-
-    # Step 1: IOU DEDUP (within same tile)
-    st.write("**Step 1: IOU Dedup (overlapping particles)**")
-
-    iou_removed = 0
-
-    def iou_2d(box1, box2):
-        x1_min, y1_min, x1_max, y1_max = box1
-        x2_min, y2_min, x2_max, y2_max = box2
-        xi_min = max(x1_min, x2_min)
-        yi_min = max(y1_min, y2_min)
-        xi_max = min(x1_max, x2_max)
-        yi_max = min(y1_max, y2_max)
-        if xi_max <= xi_min or yi_max <= yi_min:
-            return 0.0
-        inter = (xi_max - xi_min) * (yi_max - yi_min)
-        union = (x1_max - x1_min) * (y1_max - y1_min) + (x2_max - x2_min) * (y2_max - y2_min) - inter
-        return inter / union if union > 0 else 0.0
-
-    for i, p1 in enumerate(particles):
-        if p1.get('deleted'):
-            continue
-
-        for j, p2 in enumerate(particles[i+1:], start=i+1):
-            if p2.get('deleted'):
-                continue
-
-            # Only compare if same tile
-            if p1.get('tile_filename') != p2.get('tile_filename'):
-                continue
-
-            # Size & class must match
-            if p1.get('class') != p2.get('class'):
-                continue
-            if abs(p1.get('diameter_um', 0) - p2.get('diameter_um', 0)) / max(p1.get('diameter_um', 1), p2.get('diameter_um', 1)) > 0.2:
-                continue
-
-            # Check IOU
-            box1 = (p1['x'], p1['y'], p1['x'] + p1['w'], p1['y'] + p1['h'])
-            box2 = (p2['x'], p2['y'], p2['x'] + p2['w'], p2['y'] + p2['h'])
-
-            if iou_2d(box1, box2) > 0.3:
-                # Delete lower confidence
-                if p1['confidence'] > p2['confidence']:
-                    particles[j]['deleted'] = True
-                    particles[j]['duplicate_type'] = 'overlap_duplicate'
-                    particles[j]['duplicate_reason'] = f"IOU overlap with higher confidence"
-                    iou_removed += 1
-                else:
-                    particles[i]['deleted'] = True
-                    particles[i]['duplicate_type'] = 'overlap_duplicate'
-                    particles[i]['duplicate_reason'] = f"IOU overlap with higher confidence"
-                    iou_removed += 1
-                    break
-
-    st.write(f"  ✅ Removed {iou_removed} overlapping particles")
-
-    # Step 2: NEIGHBOR EDGE SCORING
-    st.write("**Step 2: Edge particle scoring vs neighbors**")
-
-    edge_dup_count = 0
-
-    for pidx, particle in enumerate(particles):
-        if particle.get('deleted'):
-            continue
-
-        tile_file = particle.get('tile_filename')
-        if not tile_file or tile_file not in neighbors_map:
-            continue
-
-        # Check if at edge
-        x, y = particle.get('x', 0), particle.get('y', 0)
-        w, h = particle.get('w', 0), particle.get('h', 0)
-        cx, cy = x + w/2, y + h/2
-
-        tile_w = particle.get('tile_width', 1024)
-        tile_h = particle.get('tile_height', 1024)
-        edge_margin = 50
-
-        at_edges = []
-        if cx < edge_margin: at_edges.append('left')
-        if cx > tile_w - edge_margin: at_edges.append('right')
-        if cy < edge_margin: at_edges.append('top')
-        if cy > tile_h - edge_margin: at_edges.append('bottom')
-
-        if not at_edges:
-            continue
-
-        # Score against neighbors
-        for edge in at_edges:
-            neighbor_file = neighbors_map[tile_file].get(edge)
-            if not neighbor_file:
-                continue
-
-            best_score = 0
-            best_match = None
-
-            for nidx, neighbor in enumerate(particles):
-                if neighbor.get('deleted') or neighbor.get('tile_filename') != neighbor_file:
-                    continue
-
-                # Class match
-                class_score = 1.0 if particle.get('class') == neighbor.get('class') else 0.3
-
-                # Size match
-                d1 = particle.get('diameter_um', 50)
-                d2 = neighbor.get('diameter_um', 50)
-                size_score = max(0, 1.0 - abs(d1 - d2) / max(d1, d2))
-
-                # Position match (perpendicular to boundary)
-                if edge in ['left', 'right']:
-                    y_diff = abs(cy - (neighbor['y'] + neighbor['h']/2))
-                    y_max = max(h, neighbor['h']) * 2
-                    pos_score = max(0, 1.0 - (y_diff / y_max))
-                else:
-                    x_diff = abs(cx - (neighbor['x'] + neighbor['w']/2))
-                    x_max = max(w, neighbor['w']) * 2
-                    pos_score = max(0, 1.0 - (x_diff / x_max))
-
-                score = (class_score * 0.3) + (size_score * 0.3) + (pos_score * 0.4)
-
-                if score > best_score:
-                    best_score = score
-                    best_match = nidx
-
-            # Mark if good match
-            if best_score >= 0.70 and best_match is not None:
-                particles[pidx]['is_duplicate'] = True
-                particles[pidx]['duplicate_type'] = 'edge_duplicate'
-                particles[pidx]['duplicate_match'] = best_match
-                particles[pidx]['duplicate_score'] = round(best_score, 3)
-                particles[pidx]['matched_edge'] = edge
-                particles[pidx]['at_seam'] = True
-                edge_dup_count += 1
-                break
-
-    st.write(f"  ✅ Found {edge_dup_count} edge duplicate candidates")
-
-    # Step 3: OVER-LABELING DETECTION (same spot, different class)
-    st.write("**Step 3: Over-labeling detection (same spot, different class)**")
-
-    overlabel_removed = 0
-
-    for i, p1 in enumerate(particles):
-        if p1.get('deleted'):
-            continue
-
-        for j, p2 in enumerate(particles[i+1:], start=i+1):
-            if p2.get('deleted'):
-                continue
-
-            # Only same tile
-            if p1.get('tile_filename') != p2.get('tile_filename'):
-                continue
-
-            # Different class (that's the point!)
-            if p1.get('class') == p2.get('class'):
-                continue
-
-            # Same spot (within 20px)
-            cx1 = p1['x'] + p1['w']/2
-            cy1 = p1['y'] + p1['h']/2
-            cx2 = p2['x'] + p2['w']/2
-            cy2 = p2['y'] + p2['h']/2
-
-            dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
-
-            if dist < 20:
-                # Delete lower confidence
-                if p1['confidence'] > p2['confidence']:
-                    particles[j]['deleted'] = True
-                    particles[j]['duplicate_type'] = 'location_duplicate'
-                    particles[j]['duplicate_reason'] = f"Over-labeled: {p2['class']} vs {p1['class']}"
-                    overlabel_removed += 1
-                else:
-                    particles[i]['deleted'] = True
-                    particles[i]['duplicate_type'] = 'location_duplicate'
-                    particles[i]['duplicate_reason'] = f"Over-labeled: {p1['class']} vs {p2['class']}"
-                    overlabel_removed += 1
-                    break
-
-    st.write(f"  ✅ Removed {overlabel_removed} over-labeled particles")
-
-    return particles, {"iou_removed": iou_removed, "edge_duplicates_found": edge_dup_count, "overlabel_removed": overlabel_removed}
-
-
+def run_edge_dedup(results, manifest, edge_margin=50, score_threshold=0.70):
     """
     Integrated edge dedup - finds tile boundary duplicates.
     Marks particles with is_duplicate=True (doesn't delete them).
@@ -678,8 +431,6 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
                     all_particles.append({
                         "tile_id": idx,
                         "tile_filename": filename,
-                        "tile_width": tile_img.shape[1],
-                        "tile_height": tile_img.shape[0],
                         "x": x1,
                         "y": y1,
                         "w": x2 - x1,
@@ -756,8 +507,6 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
                 all_particles.append({
                     "tile_id": idx,
                     "tile_filename": filename,
-                    "tile_width": tile_img.shape[1],
-                    "tile_height": tile_img.shape[0],
                     "x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1,
                     "class": model.names[int(cls)],
                     "confidence": float(conf),
@@ -926,6 +675,95 @@ with st.sidebar:
         st.write(f"Memory: {DEVICE_INFO['memory_gb']:.1f} GB")
     st.markdown("---")
 
+    # DEBUG SECTION FOR EDGE DETECTION
+    st.subheader("🔍 Debug: Edge Detection")
+
+    if st.button("Check Edge Particles"):
+        if not st.session_state.results:
+            st.warning("⚠️ Run detection first!")
+        elif not st.session_state.tile_metadata:
+            st.warning("⚠️ Load tiles first!")
+        else:
+            particles = st.session_state.results
+            tile_metadata = st.session_state.tile_metadata
+
+            # Build tile info dict using index as tile_id
+            tiles_dict = {}
+            for tile_idx, tm in enumerate(tile_metadata):
+                tiles_dict[tile_idx] = {
+                    'width': tm.get('width', 0),
+                    'height': tm.get('height', 0)
+                }
+
+            # Count particles at edges
+            total_at_edges = 0
+            edge_summary = {}
+
+            st.write("**Analysis:**")
+            st.write(f"  Total particles: {len(particles)}")
+
+            # Check each particle
+            for p in particles:
+                tile_id = p.get('tile_id', 0)
+                if tile_id not in tiles_dict:
+                    continue
+
+                tile_w = tiles_dict[tile_id].get('width', 0)
+                tile_h = tiles_dict[tile_id].get('height', 0)
+
+                x, y, w, h = p.get('x', 0), p.get('y', 0), p.get('w', 0), p.get('h', 0)
+                margin = 50
+
+                # Check if at any edge
+                at_edge = False
+                edge_type = []
+
+                if x < margin:
+                    at_edge = True
+                    edge_type.append("left")
+                if (x + w) > (tile_w - margin):
+                    at_edge = True
+                    edge_type.append("right")
+                if y < margin:
+                    at_edge = True
+                    edge_type.append("top")
+                if (y + h) > (tile_h - margin):
+                    at_edge = True
+                    edge_type.append("bottom")
+
+                if at_edge:
+                    total_at_edges += 1
+                    edges = ",".join(edge_type)
+                    key = f"Tile {tile_id} ({edges})"
+                    edge_summary[key] = edge_summary.get(key, 0) + 1
+
+            # Display results
+            st.write(f"  **At edges (50px margin):** {total_at_edges}")
+            if len(particles) > 0:
+                pct = 100 * total_at_edges / len(particles)
+                st.write(f"  **Percentage:** {pct:.1f}%")
+
+            if total_at_edges == 0:
+                st.warning("⚠️ No particles at edges!")
+                with st.expander("Why?"):
+                    st.write("""
+                    **Possible causes:**
+                    - Tiles don't overlap
+                    - Particles all in centers
+                    - Edge margin (50px) too small
+                    
+                    **To fix:**
+                    1. Check if your tiles actually overlap
+                    2. If yes, increase margin in intelligent_particle_matcher.py line 47:
+                       `margin = 50` → `margin = 100 or 150`
+                    """)
+            else:
+                st.success(f"✅ Found {total_at_edges} particles at edges!")
+                with st.expander("Breakdown by tile"):
+                    for key, count in sorted(edge_summary.items()):
+                        st.write(f"  {key}: {count}")
+
+    st.markdown("---")
     st.header("📤 Upload Tiles")
 
     st.write("**Step 1: Upload manifest.json (optional)**")
@@ -981,25 +819,32 @@ with st.sidebar:
                 )
                 st.write(f"**Raw detections: {len(raw_particles)}**")
 
-                # Step 2: Simple tile dedup (IOU + neighbor scoring)
+                # Step 2-4: PROPER DEDUP & STITCH PIPELINE
                 st.divider()
-                st.write("## 🔄 Processing")
+                st.write("## 🔄 Processing Pipeline")
 
                 try:
-                    final_particles, dedup_stats = simple_tile_dedup(
+                    from dedup_stitch_pipeline import run_full_dedup_and_stitch_pipeline
+
+                    final_particles, pipeline_stats = run_full_dedup_and_stitch_pipeline(
                         raw_particles,
-                        st.session_state.tile_metadata
+                        st.session_state.tile_metadata,
+                        st.session_state.tile_files
                     )
 
-                    st.session_state.results = final_particles
+                    # Step 5: RUN EDGE DEDUP (mark tile-boundary duplicates)
+                    if st.session_state.tile_metadata:
+                        # Build manifest from tile_metadata
+                        manifest = {
+                            "tiles": st.session_state.tile_metadata,
+                            "type": "tiled"
+                        }
+                        final_particles = run_edge_dedup(final_particles, manifest)
+                        edge_dups = sum(1 for p in final_particles if p.get('is_duplicate'))
+                        st.write(f"✅ Edge dedup: Found {edge_dups} tile-boundary duplicates")
 
-                    # Summary
-                    st.divider()
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Raw Detections", len(raw_particles))
-                    col2.metric("Overlaps Removed", dedup_stats['iou_removed'])
-                    col3.metric("Over-labeled Removed", dedup_stats['overlabel_removed'])
-                    col4.metric("Edge Duplicates Found", dedup_stats['edge_duplicates_found'])
+                    st.session_state.results = final_particles
+                    st.session_state.pipeline_stats = pipeline_stats
 
                     st.success("✅ Processing complete!")
                 except Exception as e:
@@ -1137,21 +982,15 @@ else:
     with col5:
         sort_by = st.selectbox("Sort:", ["Confidence ↓", "Confidence ↑", "Size ↓", "Size ↑"], index=0)
     with col6:
-        items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
-
-    # Show/Hide particle types
-    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
-    with col_s1:
-        show_active = st.checkbox("Active", value=True)
-    with col_s2:
-        show_edge_dups = st.checkbox("🔗 Edge Dups", value=True)
-    with col_s3:
-        show_overlabeled = st.checkbox("🏷️ Over-Labeled", value=False)
-    with col_s4:
-        show_deleted = st.checkbox("❌ Deleted", value=False)
+        dup_filter = st.selectbox("Filter:", ["All", "Edge Duplicates", "Over-Labeled", "Deleted"], index=0)
 
     # Show filter info
     st.caption(f"💡 **Edge Duplicates** = particles at tile seams | **Over-Labeled** = same spot, different class")
+
+    # Pagination row
+    col_p1, col_p2, col_p3, col_p4, col_p5, col_p6 = st.columns(6)
+    with col_p6:
+        items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
 
     # Filter particles
     all_particles = []
@@ -1160,33 +999,36 @@ else:
         total = len(st.session_state.results)
         deleted_count = len([p for p in st.session_state.results if p.get("deleted")])
         merged_count = len([p for p in st.session_state.results if p.get("merged")])
-        edge_dup_count = len([p for p in st.session_state.results if p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"])
+
+        # Show debug info in expander
+        with st.expander("🔍 Debug - Particle Status Count"):
+            st.write(f"Total particles: {total}")
+            st.write(f"Deleted particles: {deleted_count}")
+            st.write(f"Merged particles: {merged_count}")
+            st.write(f"Active particles: {total - deleted_count}")
 
         for idx, p in enumerate(st.session_state.results):
-            # Filter by duplicate type based on checkboxes
-            is_active = not p.get("deleted") and not (p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate")
-            is_edge_dup = p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"
-            is_overlabeled = p.get("deleted") and p.get("duplicate_type") == "location_duplicate"
-            is_any_deleted = p.get("deleted")
+            # Filter by duplicate type
+            if dup_filter == "Edge Duplicates":
+                # Show ONLY edge duplicates (marked with is_duplicate=True and edge_duplicate type)
+                if not (p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"):
+                    continue
+            elif dup_filter == "Over-Labeled":
+                # Show ONLY over-labeled particles (deleted AND location_duplicate type)
+                if not p.get("deleted") or p.get("duplicate_type") != "location_duplicate":
+                    continue
+            elif dup_filter == "Deleted":
+                # Show all deleted particles
+                if not p.get("deleted"):
+                    continue
+            else:
+                # Show only ACTIVE particles (not deleted, not edge duplicates flagged)
+                if p.get("deleted") or (p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"):
+                    continue
 
-            # Check which category this particle falls into
-            include = False
-            if is_active and show_active:
-                include = True
-            elif is_edge_dup and show_edge_dups:
-                include = True
-            elif is_overlabeled and show_overlabeled:
-                include = True
-            elif is_any_deleted and show_deleted and not is_overlabeled:
-                # Show other deleted particles (not over-labeled)
-                include = True
-
-            if not include:
-                continue
-
-            # Apply class/size filters to ALL particles
-            if p.get("class") not in filter_class or p.get("size_bin") not in filter_bins:
-                continue
+                # Apply class/size filters ONLY for active particles
+                if p.get("class") not in filter_class or p.get("size_bin") not in filter_bins:
+                    continue
 
             if show_seams_only and not p.get("at_seam"):
                 continue
@@ -1206,30 +1048,29 @@ else:
         all_particles.sort(key=lambda x: x[1].get('diameter_um', 0), reverse=False)
 
     # If showing duplicates or over-labeled only, pair them with their matches/kept versions
-    if show_edge_dups or show_overlabeled:
+    if dup_filter in ["Edge Duplicates", "Over-Labeled"]:
         paired_particles = []
         seen_matches = set()
+        unmatched_count = 0
 
         for idx, p in all_particles:
-            is_edge_dup = p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"
-            is_overlabeled = p.get("deleted") and p.get("duplicate_type") == "location_duplicate"
-
-            if show_edge_dups and is_edge_dup:
-                # Skip if already paired
-                if idx in seen_matches:
-                    continue
-
+            if dup_filter == "Edge Duplicates":
+                # Edge duplicates are paired via duplicate_match field
                 matched_idx = p.get("duplicate_match")
-                if matched_idx is not None and matched_idx < len(st.session_state.results):
-                    other_p = st.session_state.results[matched_idx]
-                    paired_particles.append(((idx, p), (matched_idx, other_p)))
-                    seen_matches.add(idx)
-                    seen_matches.add(matched_idx)
+                if matched_idx is not None and matched_idx not in seen_matches:
+                    other_p = None
+                    if matched_idx < len(st.session_state.results):
+                        other_p = st.session_state.results[matched_idx]
 
-            elif show_overlabeled and is_overlabeled:
-                if idx in seen_matches:
+                    if other_p:
+                        paired_particles.append(((idx, p), (matched_idx, other_p)))
+                        seen_matches.add(matched_idx)
+                else:
+                    unmatched_count += 1
+
+            elif dup_filter == "Over-Labeled":
+                if not p.get("deleted"):
                     continue
-
                 # For over-labeling, find the kept particle at same location
                 for kept_idx, kept_p in enumerate(st.session_state.results):
                     if kept_p.get("deleted"):
@@ -1242,14 +1083,15 @@ else:
                     if dist < 20:
                         paired_particles.append(((kept_idx, kept_p), (idx, p)))
                         seen_matches.add(kept_idx)
-                        seen_matches.add(idx)
                         break
+                else:
+                    unmatched_count += 1
 
-        # Info
-        if show_edge_dups and len([p for p in paired_particles if p[0][1].get("duplicate_type") == "edge_duplicate"]) > 0:
-            st.info(f"✅ Showing edge duplicate pairs")
-        if show_overlabeled and len([p for p in paired_particles if p[0][1].get("duplicate_type") == "location_duplicate"]) > 0:
-            st.info(f"✅ Showing over-labeled pairs")
+        # Debug info
+        if show_duplicates_only:
+            st.info(f"✅ Found {len(paired_particles)} edge duplicate pairs | ❌ {unmatched_count} unmatched edges")
+        else:
+            st.info(f"✅ Found {len(paired_particles)} over-labeled pairs | ❌ {unmatched_count} deleted particles without match link")
 
         display_particles = paired_particles
     else:
@@ -1257,7 +1099,7 @@ else:
         display_particles = all_particles
 
     # Determine if showing pairs BEFORE using in pagination
-    is_showing_pairs = (show_edge_dups or show_overlabeled) and len(display_particles) > 0 and isinstance(display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
+    is_showing_pairs = (dup_filter in ["Edge Duplicates", "Over-Labeled"]) and len(display_particles) > 0 and isinstance(display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
 
     if all_particles:
         # Pagination - calculate based on what we're displaying
@@ -1267,10 +1109,8 @@ else:
             total_pairs = len(display_particles)
             total_pages = max(1, (total_pairs + pairs_per_page - 1) // pairs_per_page)
 
-            if show_overlabeled:
-                st.write(f"Showing {total_pairs} over-labeled pairs ({total_pairs * 2} items)")
-            else:
-                st.write(f"Showing {total_pairs} edge duplicate pairs ({total_pairs * 2} items)")
+            pair_type = "over-labeled" if dup_filter == "Over-Labeled" else "edge duplicate"
+            st.write(f"Showing {total_pairs} {pair_type} pairs ({total_pairs * 2} items)")
         else:
             # For regular: items_per_page particles per page
             total_pages = max(1, (len(display_particles) + items_per_page - 1) // items_per_page)
@@ -1299,31 +1139,30 @@ else:
             page_items = display_particles[start:end]
 
             for pair_idx, pair in enumerate(page_items):
-                (idx1, p1), (idx2, p2) = pair
-                page_particles.append((idx1, p1))
-                page_particles.append((idx2, p2))
+                (kept_idx, kept_p), (del_idx, del_p) = pair
+                page_particles.append((kept_idx, kept_p))  # Add to page_particles for full viewer
+                page_particles.append((del_idx, del_p))
 
                 # Show duplicate type indicator
-                is_edge_dup = p1.get("duplicate_type") == "edge_duplicate"
-                if is_edge_dup:
-                    st.markdown("### 🔗 **EDGE DUPLICATE** (Particles at tile boundary)")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown(f"**Particle 1** (Score: {p1.get('duplicate_score', 0)})")
-                        display_particle_crop(idx1, p1)
-                    with col2:
-                        st.markdown(f"**Particle 2** (Score: {p2.get('duplicate_score', 0)})")
-                        display_particle_crop(idx2, p2)
-                else:
-                    # Over-labeled: p1 is kept, p2 is deleted
+                dup_type = del_p.get("duplicate_type", "unknown")
+                if dup_type == "edge_duplicate":
+                    st.markdown("### 🔪 **EDGE DUPLICATE** (Cut across tile boundary)")
+                elif dup_type == "location_duplicate":
                     st.markdown("### 🏷️ **TWICE LABELED** (Same spot, different class)")
-                    col_kept, col_del = st.columns(2)
-                    with col_kept:
-                        st.markdown("**✅ KEPT**")
-                        display_particle_crop(idx1, p1)
-                    with col_del:
-                        st.markdown("**❌ DELETED**")
-                        display_particle_crop(idx2, p2)
+                else:
+                    st.markdown("### ❌ **DUPLICATE**")
+
+                col_kept, col_del = st.columns(2)
+
+                # KEPT particle (left column)
+                with col_kept:
+                    st.markdown("**✅ KEPT**")
+                    display_particle_crop(kept_idx, kept_p)
+
+                # DELETED particle (right column)
+                with col_del:
+                    st.markdown("**❌ DELETED**")
+                    display_particle_crop(del_idx, del_p)
 
                 st.divider()
         else:
