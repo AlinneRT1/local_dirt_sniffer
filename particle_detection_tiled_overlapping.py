@@ -237,7 +237,11 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
     status = st.empty()
 
     for idx, tile_meta in enumerate(tile_metadata):
-        filename = tile_meta['filename']
+        filename = tile_meta.get('source_file') or tile_meta.get('filename')  # Support both field names
+        if not filename:
+            st.warning(f"Tile {idx} has no source_file or filename field")
+            continue
+
         status.text(f"Detecting {idx + 1}/{len(tile_metadata)}: {filename}")
 
         # Load from uploaded file
@@ -387,43 +391,60 @@ def display_particle_crop(pidx, p):
         if p.get("deleted") and p.get("duplicate_reason"):
             st.info(f"**Why removed:** {p.get('duplicate_reason')}")
 
-        # CHECKBOX - Select particle for mass operations
-        # Use truly unique global counter - ensures no collisions even if same particle displayed twice
+        # Generate widget ID for buttons
         if "widget_counter" not in st.session_state:
             st.session_state.widget_counter = 0
         st.session_state.widget_counter += 1
         widget_id = st.session_state.widget_counter
 
-        key = f"sel_{widget_id}"
-        is_selected = key in st.session_state.selected_particles
-        if st.checkbox("Select", value=is_selected, key=key):
-            st.session_state.selected_particles.add(key)
+        # DIFFERENT BUTTONS BASED ON DELETED STATUS
+        if not p.get("deleted"):
+            # KEPT PARTICLES: Can edit, select, delete
+
+            # CHECKBOX - Select particle for mass operations
+            key = f"sel_{widget_id}"
+            is_selected = key in st.session_state.selected_particles
+            if st.checkbox("Select", value=is_selected, key=key):
+                st.session_state.selected_particles.add(key)
+            else:
+                st.session_state.selected_particles.discard(key)
+
+            # EDIT CLASS - Change particle classification (auto-save)
+            current_class = p.get("class", "Other")
+            new_cls = st.selectbox(
+                "Class:",
+                ["Fiber", "Glass", "Metallic", "Other"],
+                index=["Fiber", "Glass", "Metallic", "Other"].index(current_class),
+                key=f"cls_{widget_id}"
+            )
+            # Auto-save when class changes
+            if new_cls != current_class:
+                push_undo()
+                st.session_state.results[pidx]["class"] = new_cls
+                # Recalculate size bin for new class
+                st.session_state.results[pidx]["size_bin"] = get_size_bin(st.session_state.results[pidx].get("diameter_um", 0))
+                st.rerun()
+
+            # DELETE BUTTON
+            if st.button("🗑️ Delete", key=f"del_{widget_id}"):
+                push_undo()
+                st.session_state.results[pidx]["deleted"] = True
+                st.rerun()
         else:
-            st.session_state.selected_particles.discard(key)
+            # DELETED PARTICLES: Can only restore or view
 
-        # EDIT CLASS - Change particle classification
-        new_cls = st.selectbox(
-            "Class:",
-            ["Fiber", "Glass", "Metallic", "Other"],
-            index=["Fiber", "Glass", "Metallic", "Other"].index(p.get("class", "Other")),
-            key=f"cls_{widget_id}"
-        )
-        if new_cls != p.get("class") and st.button("✓", key=f"save_{widget_id}"):
-            push_undo()
-            st.session_state.results[pidx]["class"] = new_cls
-            # Recalculate size bin for new class
-            st.session_state.results[pidx]["size_bin"] = get_size_bin(st.session_state.results[pidx].get("diameter_um", 0))
-            st.rerun()
+            # RESTORE BUTTON - Bring particle back
+            if st.button("♻️ Restore", key=f"restore_{widget_id}"):
+                push_undo()
+                st.session_state.results[pidx]["deleted"] = False
+                # Clear deletion metadata
+                st.session_state.results[pidx]["duplicate_reason"] = None
+                st.session_state.results[pidx]["duplicate_type"] = None
+                st.session_state.results[pidx]["matched_with"] = None
+                st.rerun()
 
-        # DELETE BUTTON
-        if st.button("🗑️", key=f"del_{widget_id}"):
-            push_undo()
-            st.session_state.results[pidx]["deleted"] = True
-            st.rerun()
-
-        # VIEW FULL BUTTON - Expand to full image
-        # Don't show for deleted/duplicate particles (view them in pair comparison instead)
-        if not p.get("deleted") and st.button("🔍", key=f"view_{widget_id}"):
+        # VIEW FULL BUTTON - Show for ALL particles (kept and deleted)
+        if st.button("🔍 View", key=f"view_{widget_id}"):
             st.session_state[f"show_full_{pidx}"] = True
             st.rerun()
 
@@ -445,6 +466,95 @@ with st.sidebar:
         st.write(f"Memory: {DEVICE_INFO['memory_gb']:.1f} GB")
     st.markdown("---")
 
+    # DEBUG SECTION FOR EDGE DETECTION
+    st.subheader("🔍 Debug: Edge Detection")
+
+    if st.button("Check Edge Particles"):
+        if not st.session_state.results:
+            st.warning("⚠️ Run detection first!")
+        elif not st.session_state.tile_metadata:
+            st.warning("⚠️ Load tiles first!")
+        else:
+            particles = st.session_state.results
+            tile_metadata = st.session_state.tile_metadata
+
+            # Build tile info dict using index as tile_id
+            tiles_dict = {}
+            for tile_idx, tm in enumerate(tile_metadata):
+                tiles_dict[tile_idx] = {
+                    'width': tm.get('width', 0),
+                    'height': tm.get('height', 0)
+                }
+
+            # Count particles at edges
+            total_at_edges = 0
+            edge_summary = {}
+
+            st.write("**Analysis:**")
+            st.write(f"  Total particles: {len(particles)}")
+
+            # Check each particle
+            for p in particles:
+                tile_id = p.get('tile_id', 0)
+                if tile_id not in tiles_dict:
+                    continue
+
+                tile_w = tiles_dict[tile_id].get('width', 0)
+                tile_h = tiles_dict[tile_id].get('height', 0)
+
+                x, y, w, h = p.get('x', 0), p.get('y', 0), p.get('w', 0), p.get('h', 0)
+                margin = 50
+
+                # Check if at any edge
+                at_edge = False
+                edge_type = []
+
+                if x < margin:
+                    at_edge = True
+                    edge_type.append("left")
+                if (x + w) > (tile_w - margin):
+                    at_edge = True
+                    edge_type.append("right")
+                if y < margin:
+                    at_edge = True
+                    edge_type.append("top")
+                if (y + h) > (tile_h - margin):
+                    at_edge = True
+                    edge_type.append("bottom")
+
+                if at_edge:
+                    total_at_edges += 1
+                    edges = ",".join(edge_type)
+                    key = f"Tile {tile_id} ({edges})"
+                    edge_summary[key] = edge_summary.get(key, 0) + 1
+
+            # Display results
+            st.write(f"  **At edges (50px margin):** {total_at_edges}")
+            if len(particles) > 0:
+                pct = 100 * total_at_edges / len(particles)
+                st.write(f"  **Percentage:** {pct:.1f}%")
+
+            if total_at_edges == 0:
+                st.warning("⚠️ No particles at edges!")
+                with st.expander("Why?"):
+                    st.write("""
+                    **Possible causes:**
+                    - Tiles don't overlap
+                    - Particles all in centers
+                    - Edge margin (50px) too small
+                    
+                    **To fix:**
+                    1. Check if your tiles actually overlap
+                    2. If yes, increase margin in intelligent_particle_matcher.py line 47:
+                       `margin = 50` → `margin = 100 or 150`
+                    """)
+            else:
+                st.success(f"✅ Found {total_at_edges} particles at edges!")
+                with st.expander("Breakdown by tile"):
+                    for key, count in sorted(edge_summary.items()):
+                        st.write(f"  {key}: {count}")
+
+    st.markdown("---")
     st.header("📤 Upload Tiles")
 
     st.write("**Step 1: Upload manifest.json**")
@@ -490,60 +600,28 @@ with st.sidebar:
                     st.session_state.tile_metadata,
                     model
                 )
-                st.write(f"Raw detections: {len(raw_particles)}")
+                st.write(f"**Raw detections: {len(raw_particles)}**")
 
-                # Initialize for processing pipeline
-                stitched_count = 0
-                iou_stats = {'duplicates_removed': 0}
+                # Step 2-4: PROPER DEDUP & STITCH PIPELINE
+                st.divider()
+                st.write("## 🔄 Processing Pipeline")
 
-                # SMART EDGE-BASED MATCHING - Compare particles at tile boundaries
-                st.write("🔍 Smart edge-based particle matching...")
                 try:
-                    from intelligent_particle_matcher import IntelligentParticleMatcher
+                    from dedup_stitch_pipeline import run_full_dedup_and_stitch_pipeline
 
-                    # Build tile metadata for matcher
-                    matcher_metadata = []
-                    for i, tm in enumerate(st.session_state.tile_metadata):
-                        matcher_metadata.append({
-                            "tile_id": i,
-                            "filename": tm["filename"],
-                            "width": tm.get("width", 3000),
-                            "height": tm.get("height", 3000),
-                            "neighbors": tm.get("neighbors", {})
-                        })
-
-                    matcher = IntelligentParticleMatcher(
-                        matcher_metadata,
-                        size_tolerance=0.20,      # 20% size difference ok
-                        edge_margin_pct=0.10,     # Check within 10% of edge
-                        confidence_threshold=0.5   # Min confidence for match
+                    final_particles, pipeline_stats = run_full_dedup_and_stitch_pipeline(
+                        raw_particles,
+                        st.session_state.tile_metadata,
+                        st.session_state.tile_files
                     )
 
-                    # Find all edge matches
-                    matched_particles, edge_matches = matcher.process_all_neighbors(raw_particles)
+                    st.session_state.results = final_particles
+                    st.session_state.pipeline_stats = pipeline_stats
 
-                    iou_dedup_count = len([p for p in matched_particles if p.get("deleted")])
-                    st.write(f"✅ Smart matching found {len(edge_matches)} matches")
-                    st.write(f"   Removed {iou_dedup_count} duplicate particles")
-
-                    # STITCHING: Recalculate sizes on complete stitched particles
-                    st.write("🔗 Stitching matched particles...")
-
-                    # Load all tile images for stitching
-                    tile_images = {}
-                    for tile_idx, tile_meta in enumerate(st.session_state.tile_metadata):
-                        filename = tile_meta["filename"]
-                        try:
-                            tile_file = st.session_state.tile_files[filename]
-                            tile_img = Image.open(tile_file).convert('RGB')  # PIL uses RGB, not BGR
-                            tile_images[tile_idx] = np.array(tile_img)
-                        except Exception as e:
-                            st.warning(f"Could not load tile {filename} for stitching: {e}")
-
-                    # Stitch each matched pair
-                    stitched_count = 0
-                    stitch_results = []
-                    marked_merged_count = 0
+                    st.success("✅ Processing complete!")
+                except Exception as e:
+                    st.error(f"Pipeline error: {e}")
+                    st.session_state.results = raw_particles
 
                     for match in edge_matches:
                         stitch_info = matcher.stitch_particles(
