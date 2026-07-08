@@ -35,6 +35,26 @@ st.set_page_config(page_title="tiled dirt sniffer", page_icon="icon.ico", layout
 st.title("🐕 tiled_dirt_sniffer: Review Dashboard")
 
 # ============================================================
+# Initialize Session State
+# ============================================================
+if 'results' not in st.session_state:
+    st.session_state.results = []
+if 'tile_metadata' not in st.session_state:
+    st.session_state.tile_metadata = []
+if 'tile_files' not in st.session_state:
+    st.session_state.tile_files = {}
+if 'selected_particles' not in st.session_state:
+    st.session_state.selected_particles = set()
+if 'undo_stack' not in st.session_state:
+    st.session_state.undo_stack = []
+if 'widget_counter' not in st.session_state:
+    st.session_state.widget_counter = 0
+if 'stitch_cache' not in st.session_state:
+    st.session_state.stitch_cache = {}
+if 'pipeline_stats' not in st.session_state:
+    st.session_state.pipeline_stats = {}
+
+# ============================================================
 # GPU/Device Detection - Support NVIDIA and Intel Arc
 # ============================================================
 
@@ -621,356 +641,13 @@ with st.sidebar:
                     st.success("✅ Processing complete!")
                 except Exception as e:
                     st.error(f"Pipeline error: {e}")
+                    import traceback
+                    st.error(traceback.format_exc())
                     st.session_state.results = raw_particles
-
-                    for match in edge_matches:
-                        stitch_info = matcher.stitch_particles(
-                            match,
-                            tile_images,
-                            calibration_um_per_pixel=CALIBRATION_UM_PER_PIXEL
-                        )
-
-                        if stitch_info:
-                            stitched_count += 1
-                            stitch_results.append(stitch_info)
-
-                            # Update the kept particle with stitched size
-                            kept_particle_idx = match["tile1_idx"]
-                            deleted_particle_idx = match["tile2_idx"]
-
-                            if kept_particle_idx < len(matched_particles):
-                                kept_p = matched_particles[kept_particle_idx]
-                                kept_p["diameter_um"] = stitch_info["stitched_diameter_um"]
-                                kept_p["stitched"] = True
-                                kept_p["merged"] = True  # Mark as merged for gallery filter
-                                kept_p["original_diameter_um"] = stitch_info["original_diameter_um"]
-                                kept_p["size_change_pct"] = stitch_info["size_change_pct"]
-                                kept_p["stitched_image"] = stitch_info.get("stitched_image")  # Store stitched image
-                                kept_p["overlap_pixels"] = stitch_info.get("overlap_pixels", 0)
-                                kept_p["stitch_direction"] = stitch_info.get("direction", "?")
-                                kept_p["match_score"] = stitch_info.get("match_score", 0)
-                                kept_p["stitched_diagonal_px"] = stitch_info.get("stitched_diagonal_px", 0)
-                                kept_p["stitched_w"] = stitch_info.get("stitched_w_px", 0)
-                                kept_p["stitched_h"] = stitch_info.get("stitched_h_px", 0)
-
-                                # Mark deleted particle and set matched_with
-                                if deleted_particle_idx < len(matched_particles):
-                                    deleted_p = matched_particles[deleted_particle_idx]
-                                    deleted_p["deleted"] = True
-                                    deleted_p["matched_with"] = kept_particle_idx
-                                    deleted_p["duplicate_type"] = "edge_duplicate"  # Mark as edge duplicate ✅
-                                    stitch_direction = stitch_info.get("direction", "?")
-                                    deleted_p["duplicate_reason"] = f"Cut across {stitch_direction} boundary, kept higher confidence"
-
-                                marked_merged_count += 1
-
-                    st.write(f"✅ Stitched {stitched_count}/{len(edge_matches)} particle pairs")
-                    st.write(f"   Marked {marked_merged_count} particles as merged")
-
-                    # DEBUG: Show stitching details
-                    with st.expander("🔍 Stitching Debug Info"):
-                        st.write("**Stitched Particles Details:**")
-                        for idx, stitch in enumerate(stitch_results[:5]):  # Show first 5
-                            st.write(f"""
-**Pair {idx+1}:**
-- Original: {stitch['original_diameter_um']:.1f}µm
-- Stitched: {stitch['stitched_diameter_um']:.1f}µm
-- Change: {stitch['size_change_pct']:+.1f}%
-- Stitched bbox: {stitch['stitched_w_px']}×{stitch['stitched_h_px']}px
-- Overlap: {stitch['overlap_pixels']}px
-- Direction: {stitch['direction']}
-- Score: {stitch['match_score']:.3f}
-                            """)
-                        if len(stitch_results) > 5:
-                            st.write(f"... and {len(stitch_results) - 5} more")
-
-                    iou_dedup_particles = matched_particles
-                    iou_stats = {'duplicates_removed': iou_dedup_count}
-
-                    # Display matched pairs and stitching results
-                    if len(edge_matches) > 0:
-                        st.info(f"ℹ️ {len(edge_matches)} particle pairs matched at edges, {stitched_count} stitched")
-                        with st.expander("📋 Matched particle pairs & stitching results"):
-                            for i, match in enumerate(edge_matches):
-                                p1 = match["particle1"]
-                                p2 = match["particle2"]
-                                score = match["match_score"]
-
-                                stitch = stitch_results[i] if i < len(stitch_results) else None
-
-                                if stitch:
-                                    st.write(f"""
-                                    **Match {i+1}:** Score {score:.2f}
-                                    - **Original:** {p1.get('class')} - {p1.get('diameter_um'):.1f}µm (Tile {match['tile1_id']})
-                                    - **Stitched:** {stitch['stitched_diameter_um']:.1f}µm
-                                    - **Change:** {stitch['size_change_pct']:+.1f}%
-                                    - **Direction:** {match['direction']}
-                                    """)
-                                else:
-                                    st.write(f"""
-                                    **Match {i+1}:** Score {score:.2f}
-                                    - {p1.get('class')} ({p1.get('diameter_um'):.1f}µm) 
-                                    - {p2.get('class')} ({p2.get('diameter_um'):.1f}µm)
-                                    - Direction: {match['direction']}
-                                    - ⚠️ Stitching failed
-                                    """)
-
-                except Exception as e:
-                    st.warning(f"Smart matching failed: {e}")
-                    iou_dedup_particles = raw_particles
-                # Uses TOLERANCE: particles within 10px of each other = same location
-                st.write("🔍 Location deduplication (same spot, different class)...")
-
-                deduplicated_by_location = {}
-                location_tolerance = 10  # pixels - particles this close are same location
-
-                for p in iou_dedup_particles:
-                    p_center_x = p.get('x', 0) + p.get('w', 0) / 2
-                    p_center_y = p.get('y', 0) + p.get('h', 0) / 2
-                    tile_id = p.get('tile_id')
-                    p_conf = p.get('confidence', 0)
-
-                    # Find if this particle matches any existing location
-                    matched = False
-                    for existing_key, existing_p in deduplicated_by_location.items():
-                        existing_tile_id = existing_key[0]
-                        existing_center_x = existing_key[1]
-                        existing_center_y = existing_key[2]
-
-                        # Same tile and within tolerance distance?
-                        if tile_id == existing_tile_id:
-                            dist = ((p_center_x - existing_center_x)**2 + (p_center_y - existing_center_y)**2)**0.5
-                            if dist < location_tolerance:
-                                # Same location! Keep higher confidence
-                                if p_conf > existing_p.get('confidence', 0):
-                                    deduplicated_by_location[existing_key] = p
-                                matched = True
-                                break
-
-                    if not matched:
-                        # New location
-                        location_key = (tile_id, p_center_x, p_center_y)
-                        deduplicated_by_location[location_key] = p
-
-                # Mark duplicates as deleted and track matches
-                location_dedup_count = 0
-                kept_particle_ids = set(id(p) for p in deduplicated_by_location.values())
-                kept_particles_by_id = {id(p): (idx, p) for idx, p in enumerate(iou_dedup_particles) if id(p) in kept_particle_ids}
-
-                # Mark deleted and set matched_with
-                for idx, p in enumerate(iou_dedup_particles):
-                    if id(p) not in kept_particle_ids:
-                        p["deleted"] = True
-
-                        # Find which kept particle it matched with
-                        p_center_x = p.get('x', 0) + p.get('w', 0) / 2
-                        p_center_y = p.get('y', 0) + p.get('h', 0) / 2
-                        tile_id = p.get('tile_id')
-
-                        for kept_id, (kept_idx, kept_p) in kept_particles_by_id.items():
-                            kept_tile_id = kept_p.get('tile_id')
-                            kept_center_x = kept_p.get('x', 0) + kept_p.get('w', 0) / 2
-                            kept_center_y = kept_p.get('y', 0) + kept_p.get('h', 0) / 2
-
-                            if tile_id == kept_tile_id:
-                                dist = ((p_center_x - kept_center_x)**2 + (p_center_y - kept_center_y)**2)**0.5
-                                if dist < location_tolerance:
-                                    p["matched_with"] = kept_idx
-                                    # Mark as location duplicate (same spot, different class) ✅
-                                    p["duplicate_type"] = "location_duplicate"
-                                    kept_conf = kept_p.get('confidence', 0)
-                                    del_conf = p.get('confidence', 0)
-                                    p["duplicate_reason"] = f"Same spot: {p.get('class')} ({del_conf:.2f}) vs {kept_p.get('class')} ({kept_conf:.2f})"
-                                    break
-
-                        location_dedup_count += 1
-
-                if location_dedup_count > 0:
-                    st.warning(f"⚠️ Found {location_dedup_count} duplicate locations (same spot, different class) - kept highest confidence")
-
-                # Debug: count deleted particles
-                deleted_in_dedup = len([p for p in iou_dedup_particles if p.get("deleted")])
-                st.write(f"   Location dedup marked {deleted_in_dedup} total particles as deleted")
-
-                # After dedup, work with ALL particles (including deleted ones for gallery viewing)
-                # Don't filter out deleted particles here - we need them for the "show duplicates only" filter
-                all_dedup_particles = iou_dedup_particles  # Keep ALL particles including deleted
-                active_particles = [p for p in iou_dedup_particles if not p.get("deleted")]
-                st.write(f"After all dedup: {len(active_particles)} active particles (+ {len(iou_dedup_particles) - len(active_particles)} deleted)")
-
-                # Step 2: Mark seams only (disable merging without accurate coords)
-                try:
-                    st.write("📍 Marking particles at tile seams...")
-
-                    # Mark seams with SIMPLE DIRECT method (tile-local only, no coords needed)
-                    # Process ALL particles (including deleted) to keep full record
-                    seam_marked = []
-                    seams_found = 0
-                    seam_margin = 30
-
-                    for p in all_dedup_particles:
-                        tile_id = p.get("tile_id", 0)
-                        x = p.get("x", 0)
-                        y = p.get("y", 0)
-                        w = p.get("w", 0)
-                        h = p.get("h", 0)
-
-                        # Get tile dimensions from metadata
-                        tile_w = 0
-                        tile_h = 0
-                        if tile_id < len(st.session_state.tile_metadata):
-                            tm = st.session_state.tile_metadata[tile_id]
-                            tile_w = tm.get("width", 3000)
-                            tile_h = tm.get("height", 3000)
-
-                        # Check each edge (tile-local only)
-                        seams = []
-                        at_seam = False
-
-                        if x < seam_margin:
-                            seams.append("left")
-                            at_seam = True
-                        if x + w > tile_w - seam_margin:
-                            seams.append("right")
-                            at_seam = True
-                        if y < seam_margin:
-                            seams.append("top")
-                            at_seam = True
-                        if y + h > tile_h - seam_margin:
-                            seams.append("bottom")
-                            at_seam = True
-
-                        p["at_seam"] = at_seam
-                        p["seams"] = seams
-
-                        # Only count active particles at seams
-                        if at_seam and not p.get("deleted"):
-                            seams_found += 1
-
-                        seam_marked.append(p)
-
-                    st.write(f"✅ Found {seams_found} particles at seams")
-
-                    # SKIP MERGING - Without accurate overlap coords, can't reliably match particles
-                    # across tile boundaries. Merging would require pixel-perfect alignment.
-                    merged_particles = seam_marked
-                    merged_pairs = []
-
-                    st.write(f"ℹ️ Merging DISABLED (coords are approximate)")
-                    st.write(f"   Seam particles marked but not stitched")
-
-                    num_at_seam = seams_found
-
-                    st.write(f"✅ Processing complete!")
-                    st.write(f"   Raw detections: {len(raw_particles)}")
-                    st.write(f"   Smart matching removed: {iou_stats['duplicates_removed']}")
-                    st.write(f"   Particles stitched: {stitched_count}")
-                    st.write(f"   Location dedup removed: {location_dedup_count} (tolerance: 10px)")
-                    st.write(f"   Seam particles marked: {num_at_seam}")
-                    active_count = len([p for p in merged_particles if not p.get("deleted")])
-                    st.write(f"   **Final count (active): {active_count}** (+ {len(merged_particles) - active_count} deleted)")
-
-
-                    with st.expander("📊 What happened:"):
-                        st.write(f"""
-                        **Processing Pipeline (Smart Matching):**
-                        
-                        Raw detections: {len(raw_particles)}
-                        ✅ Smart edge matching (size/class/position): -{iou_stats['duplicates_removed']}
-                           - Compares particles at tile boundaries
-                           - Matches on: size (±20%), class, position alignment
-                           - Keeps: highest confidence copy
-                        ✅ Location dedup (10px tolerance): -{location_dedup_count}
-                           - Removes same particle, different class labels
-                        ✅ Seam detection: {num_at_seam} marked
-                           - Marks cut particles at edges (not yet stitched)
-                        ────────────────────────
-                        **FINAL: {len(merged_particles)}**
-                        
-                        **Matching Criteria:**
-                        - Size match: diameter difference ≤ 20%
-                        - Class match: same particle class
-                        - Position: aligned within tile boundaries
-                        - Confidence: at least one detection ≥ 0.5
-                        """)
-
-                    with st.expander("ℹ️ Deduplication Details"):
-                        st.write("""
-                        **Smart Edge-Based Matching (No Blind Assumptions)**
-                        
-                        Instead of assuming 10% overlap, we use metadata + intelligent criteria:
-                        
-                        **Step 1: Find Neighbors**
-                        - Use metadata "neighbors" field to identify which tiles touch
-                        - Check left/right/top/bottom edges
-                        
-                        **Step 2: Find Edge Particles**
-                        - Collect particles within 10% of each tile edge
-                        - Prepare to compare across boundaries
-                        
-                        **Step 3: Smart Matching**
-                        For each particle on edge, find best match in neighbor tile:
-                        ✅ Size check: diameter difference ≤ 20%
-                           - If Particle A is 50µm and Particle B is 58µm → Match (16% diff)
-                        ✅ Class check: same type
-                           - Both "Fiber" or both "Glass" → Good
-                           - Different classes → No match (unless high confidence one)
-                        ✅ Position check: aligned geometrically
-                           - For left/right edges: Y positions should be similar
-                           - For top/bottom edges: X positions should be similar
-                        ✅ Confidence check: at least one detection confident
-                           - Min 0.5 confidence on highest scorer
-                        
-                        **Step 4: Keep Highest Confidence**
-                        - If all criteria met: particles are likely the SAME particle
-                        - Keep the one with higher confidence
-                        - Remove the lower confidence duplicate
-                        
-                        **Step 5: Future - Stitch Cut Particles**
-                        - For matched particles at seams: combine images
-                        - Recalculate size on stitched image
-                        - Update diameter_um with true complete measurement
-                        
-                        **Example:**
-                        ```
-                        Tile 0 near right edge: Particle A - 50µm, Fiber, conf 0.92
-                        Tile 1 near left edge:  Particle B - 52µm, Fiber, conf 0.78
-                        
-                        Size: 52-50=2µm, 2/50=4% ✓ (< 20%)
-                        Class: Fiber = Fiber ✓
-                        Y-pos: Similar ✓
-                        Conf: 0.92 ≥ 0.5 ✓
-                        
-                        → MATCH! Keep A (0.92), delete B (0.78)
-                        ```
-                        
-                        **Why This is Better:**
-                        ✅ No blind coordinate assumptions
-                        ✅ Uses actual metadata neighbors
-                        ✅ Multi-criteria matching (not just overlap)
-                        ✅ Keeps high confidence, removes duplicates
-                        ✅ Ready for intelligent stitching
-                        """)
-
-                    st.session_state.results = merged_particles
-
-                except Exception as e:
-                    st.error(f"Seam detection error: {e}")
-                    st.write("Using results without seam marks")
-                    st.session_state.results = all_dedup_particles
 
                 st.session_state.undo_stack = []
                 st.session_state.selected_particles = set()
-                st.success(f"Done!")
-
-    st.divider()
-
-    if st.session_state.undo_stack:
-        if st.button("↶ Undo"):
-            st.session_state.results = st.session_state.undo_stack.pop()
-            st.session_state.selected_particles = set()
-            st.rerun()
-
+                st.success(f"✅ Done! Check galleries below.")
     if st.session_state.results:
         total = len([p for p in st.session_state.results if not p.get("deleted")])
         st.success(f"✅ {total} particles")
