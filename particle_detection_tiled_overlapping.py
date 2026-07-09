@@ -66,7 +66,6 @@ if 'notifications_enabled' not in st.session_state:
 if 'notif_shown' not in st.session_state:
     st.session_state.notif_shown = False
 
-
 # Notification button - compact
 with st.sidebar:
     col_sidebar1, col_sidebar2 = st.columns(2)
@@ -91,7 +90,7 @@ if st.session_state.notifications_enabled and not st.session_state.get('notif_sh
     if (Notification.permission === 'default') {
         Notification.requestPermission();
     }
-    
+
     // Function to show notification
     window.showNotification = function(title, options) {
         if (Notification.permission === 'granted') {
@@ -103,7 +102,6 @@ if st.session_state.notifications_enabled and not st.session_state.get('notif_sh
     };
     </script>
     """, unsafe_allow_html=True)
-
 
 
 # ============================================================
@@ -157,6 +155,7 @@ def detect_device():
     device_info["backend"] = "CPU"
     return device_info
 
+
 # Detect device on startup
 DEVICE_INFO = detect_device()
 DEVICE = DEVICE_INFO["device"]
@@ -177,6 +176,7 @@ SIZE_BINS = [
     ("J: 1000μm+ (0 pcs)", 1000, float("inf")),
 ]
 
+
 @st.cache_resource
 def load_model():
     if not os.path.exists(MODEL_PATH):
@@ -186,12 +186,14 @@ def load_model():
     # Don't use .to() with YOLO models
     return model
 
+
 def get_size_bin(diameter_um):
     """Get size bin label for a diameter in µm"""
     for label, lo, hi in SIZE_BINS:
         if lo <= diameter_um < hi:
             return label
     return SIZE_BINS[-1][0]
+
 
 def simple_tile_dedup(raw_particles, tile_metadata):
     """
@@ -243,7 +245,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         if p1.get('deleted'):
             continue
 
-        for j, p2 in enumerate(particles[i+1:], start=i+1):
+        for j, p2 in enumerate(particles[i + 1:], start=i + 1):
             if p2.get('deleted'):
                 continue
 
@@ -256,19 +258,19 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 continue
 
             # Same spot (within 20px)
-            cx1 = p1['x'] + p1['w']/2
-            cy1 = p1['y'] + p1['h']/2
-            cx2 = p2['x'] + p2['w']/2
-            cy2 = p2['y'] + p2['h']/2
+            cx1 = p1['x'] + p1['w'] / 2
+            cy1 = p1['y'] + p1['h'] / 2
+            cx2 = p2['x'] + p2['w'] / 2
+            cy2 = p2['y'] + p2['h'] / 2
 
-            dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
+            dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
 
             if dist >= 20:
                 continue
 
             # Check IOU and confidence
             iou = iou_2d((p1['x'], p1['y'], p1['x'] + p1['w'], p1['y'] + p1['h']),
-                        (p2['x'], p2['y'], p2['x'] + p2['w'], p2['y'] + p2['h']))
+                         (p2['x'], p2['y'], p2['x'] + p2['w'], p2['y'] + p2['h']))
             conf_diff = abs(p1['confidence'] - p2['confidence']) / max(p1['confidence'], p2['confidence'])
 
             # Delete if high overlap or confidence diff
@@ -328,7 +330,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
             # Check if at edge
             x, y = particle.get('x', 0), particle.get('y', 0)
             w, h = particle.get('w', 0), particle.get('h', 0)
-            cx, cy = x + w/2, y + h/2
+            cx, cy = x + w / 2, y + h / 2
             x_right = x + w
             y_bottom = y + h
 
@@ -382,11 +384,11 @@ def simple_tile_dedup(raw_particles, tile_metadata):
 
                     # Position match
                     if edge in ['left', 'right']:
-                        y_diff = abs(cy - (neighbor['y'] + neighbor['h']/2))
+                        y_diff = abs(cy - (neighbor['y'] + neighbor['h'] / 2))
                         y_max = max(h, neighbor['h']) * 2.5
                         pos_score = max(0, 1.0 - (y_diff / y_max))
                     else:
-                        x_diff = abs(cx - (neighbor['x'] + neighbor['w']/2))
+                        x_diff = abs(cx - (neighbor['x'] + neighbor['w'] / 2))
                         x_max = max(w, neighbor['w']) * 2.5
                         pos_score = max(0, 1.0 - (x_diff / x_max))
 
@@ -451,7 +453,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         tile_h = particle.get('tile_height', 1024)
 
         # Check if particle is near edge (150px margin - was working!)
-        cx, cy = x + w/2, y + h/2
+        cx, cy = x + w / 2, y + h / 2
         x_right = x + w
         y_bottom = y + h
 
@@ -483,11 +485,11 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 if neighbor.get('deleted') or neighbor.get('tile_filename') != neighbor_file:
                     continue
 
-                # Size can be different (particles at seam might be different sizes)
+                # Size can be different but not TOO different
                 d1 = particle.get('diameter_um', 50)
                 d2 = neighbor.get('diameter_um', 50)
                 size_diff = abs(d1 - d2) / max(d1, d2, 1)
-                if size_diff > 0.6:  # Very lenient: allows 60% difference
+                if size_diff > 0.4:  # Strict: max 40% difference
                     continue
 
                 # Neighbor should be near opposite edge (more relaxed: 100px)
@@ -512,47 +514,46 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 if not neighbor_near_opposite:
                     continue
 
-                # Class match - be lenient (particles split at seams might have different labels)
+                # Class match - lenient (particles split at seams can have different class labels)
                 n_class = neighbor.get('class')
                 p_class = particle.get('class')
                 if p_class == n_class:
                     class_score = 1.0
                 elif (p_class in ['Fiber', 'Glass'] and n_class in ['Fiber', 'Glass']):
-                    class_score = 0.7
+                    class_score = 0.8  # Fiber/Glass can be confused
                 elif (p_class in ['Metallic', 'Other'] and n_class in ['Metallic', 'Other']):
-                    class_score = 0.7
+                    class_score = 0.8  # Metallic/Other can be confused
                 else:
-                    class_score = 0.3
+                    class_score = 0.5  # Different families but still allow with penalty
 
-                # Size match - more lenient (50% tolerance)
-                d1 = particle.get('diameter_um', 50)
-                d2 = neighbor.get('diameter_um', 50)
-                size_diff = abs(d1 - d2) / max(d1, d2, 1)
-                size_score = max(0, 1.0 - size_diff * 2.0)  # More forgiving
+                # Size match - STRICT (split particles should be similar size)
+                size_score = max(0, 1.0 - size_diff * 2.5)  # Stricter scoring curve
 
-                # Position check
-                cx = x + w/2
-                cy = y + h/2
+                # Position check - STRICT alignment required
+                cx = x + w / 2
+                cy = y + h / 2
                 if edge in ['left', 'right']:
-                    cy2 = n_y + n_h/2
+                    cy2 = n_y + n_h / 2
                     y_diff = abs(cy - cy2)
                     max_h = max(h, n_h)
-                    pos_score = max(0, 1.0 - (y_diff / (max_h * 2.5)))  # More lenient
+                    # Strict: particles must align vertically (within 1.0x height)
+                    pos_score = max(0, 1.0 - (y_diff / (max_h * 1.0)))
                 else:
-                    cx2 = n_x + n_w/2
+                    cx2 = n_x + n_w / 2
                     x_diff = abs(cx - cx2)
                     max_w = max(w, n_w)
-                    pos_score = max(0, 1.0 - (x_diff / (max_w * 2.5)))  # More lenient
+                    # Strict: particles must align horizontally (within 1.0x width)
+                    pos_score = max(0, 1.0 - (x_diff / (max_w * 1.0)))
 
                 # Combined score (class * 0.25 + size * 0.35 + position * 0.40)
                 score = (class_score * 0.25) + (size_score * 0.35) + (pos_score * 0.40)
 
-                if score > best_score and score > 0.35:  # Relaxed from 0.4 to 0.35
+                if score > best_score and score > 0.5:  # Stricter threshold
                     best_score = score
                     best_match = nidx
 
             # Mark for stitching
-            if best_match is not None and best_score > 0.35:  # Relaxed from 0.4 to 0.35
+            if best_match is not None and best_score > 0.5:  # Stricter threshold
                 particles[pidx]['merged'] = True
                 particles[pidx]['merge_type'] = 'stitched'
                 particles[pidx]['matched_stitch'] = best_match
@@ -565,6 +566,8 @@ def simple_tile_dedup(raw_particles, tile_metadata):
     dedup_stats['stitches_found'] = stitch_count
 
     return particles, dedup_stats
+
+
 def calculate_particle_size_accurate(mask_array, calibration):
     """Edge detection sizing"""
     try:
@@ -591,6 +594,7 @@ def calculate_particle_size_accurate(mask_array, calibration):
         pass
 
     return None, "failed"
+
 
 def calculate_merged_particle_size(stitched_image, calibration):
     """Recalculate size on the complete stitched image using edge detection"""
@@ -621,6 +625,7 @@ def calculate_merged_particle_size(stitched_image, calibration):
         pass
 
     return None, "failed"
+
 
 def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
     """Stitch together tiles for a merged cut particle and recalculate size"""
@@ -674,6 +679,7 @@ def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
         }, seam_position
     except:
         return None, None, None
+
 
 def detect_particles_in_tiles(tile_files, tile_metadata, model):
     """Detect in all tiles (loads from uploaded files)"""
@@ -826,6 +832,7 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
     status.empty()
     return all_particles
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -841,108 +848,58 @@ if "tile_metadata" not in st.session_state:
 if "tile_files" not in st.session_state:
     st.session_state.tile_files = {}
 
+
 def find_overlap_from_particles(tile_files, p1, p2, stitch_edge):
     """
-    Find overlap by matching particle regions only
-    Returns both overlap amount and match confidence score
+    Simple overlap detection using image correlation
+    Keep it basic - what was working before!
     """
     try:
         file1 = tile_files.get(p1.get('tile_filename'))
         file2 = tile_files.get(p2.get('tile_filename'))
 
         if not file1 or not file2:
-            return 50, 0.0
+            return 50
 
         img1 = cv2.cvtColor(np.array(Image.open(file1).convert('RGB')), cv2.COLOR_RGB2GRAY)
         img2 = cv2.cvtColor(np.array(Image.open(file2).convert('RGB')), cv2.COLOR_RGB2GRAY)
 
-        padding = 80
-
-        x1, y1, w1, h1 = p1.get('x', 0), p1.get('y', 0), p1.get('w', 50), p1.get('h', 50)
-        x2, y2, w2, h2 = p2.get('x', 0), p2.get('y', 0), p2.get('w', 50), p2.get('h', 50)
-
-        crop1_x1 = max(0, x1 - padding)
-        crop1_y1 = max(0, y1 - padding)
-        crop1_x2 = min(img1.shape[1], x1 + w1 + padding)
-        crop1_y2 = min(img1.shape[0], y1 + h1 + padding)
-        crop1 = img1[crop1_y1:crop1_y2, crop1_x1:crop1_x2]
-
-        crop2_x1 = max(0, x2 - padding)
-        crop2_y1 = max(0, y2 - padding)
-        crop2_x2 = min(img2.shape[1], x2 + w2 + padding)
-        crop2_y2 = min(img2.shape[0], y2 + h2 + padding)
-        crop2 = img2[crop2_y1:crop2_y2, crop2_x1:crop2_x2]
-
-        if crop1.size == 0 or crop2.size == 0:
-            return 50, 0.0
-
-        crop1_norm = crop1.astype(np.float32)
-        crop2_norm = crop2.astype(np.float32)
-
-        crop1_norm = (crop1_norm - crop1_norm.mean()) / (crop1_norm.std() + 1e-5)
-        crop2_norm = (crop2_norm - crop2_norm.mean()) / (crop2_norm.std() + 1e-5)
-
         overlap_px = 50
-        match_score = 0.0
 
         if stitch_edge in ['left', 'right']:
-            edge_width = min(60, crop1.shape[1] // 2, crop2.shape[1] // 2)
+            # Horizontal: correlate right edge of img1 with left edge of img2
+            img1_right = img1[:, -200:].astype(np.float32)
+            img2_left = img2[:, :200].astype(np.float32)
 
-            if edge_width < 10:
-                return 50, 0.0
+            # Normalize
+            img1_right = (img1_right - img1_right.mean()) / (img1_right.std() + 1e-5)
+            img2_left = (img2_left - img2_left.mean()) / (img2_left.std() + 1e-5)
 
-            crop1_right = crop1_norm[:, -edge_width:].astype(np.float32)
-            crop2_left = crop2_norm[:, :edge_width].astype(np.float32)
-
-            template_width = min(30, crop1_right.shape[1] // 2)
-            if template_width < 5:
-                return 50, 0.0
-
-            template = crop1_right[:, -template_width:]
-
-            if template.shape[0] <= 0 or template.shape[1] <= 0:
-                return 50, 0.0
-            if crop2_left.shape[0] < template.shape[0] or crop2_left.shape[1] < template.shape[1]:
-                return 50, 0.0
-
-            result = cv2.matchTemplate(crop2_left, template, cv2.TM_CCOEFF)
-            if result.size > 0:
-                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            # Correlate
+            corr = cv2.matchTemplate(img2_left, img1_right[-100:, :], cv2.TM_CCOEFF)
+            if corr.size > 0:
+                _, _, _, max_loc = cv2.minMaxLoc(corr)
                 overlap_px = int(max_loc[0])
-                match_score = float(max_val)  # Correlation coefficient
-                overlap_px = max(10, min(overlap_px, 150))
+                overlap_px = max(0, min(overlap_px, 200))
         else:
-            edge_height = min(60, crop1.shape[0] // 2, crop2.shape[0] // 2)
+            # Vertical: correlate bottom edge of img1 with top edge of img2
+            img1_bottom = img1[-200:, :].astype(np.float32)
+            img2_top = img2[:200, :].astype(np.float32)
 
-            if edge_height < 10:
-                return 50, 0.0
+            img1_bottom = (img1_bottom - img1_bottom.mean()) / (img1_bottom.std() + 1e-5)
+            img2_top = (img2_top - img2_top.mean()) / (img2_top.std() + 1e-5)
 
-            crop1_bottom = crop1_norm[-edge_height:, :].astype(np.float32)
-            crop2_top = crop2_norm[:edge_height, :].astype(np.float32)
-
-            template_height = min(30, crop1_bottom.shape[0] // 2)
-            if template_height < 5:
-                return 50, 0.0
-
-            template = crop1_bottom[-template_height:, :]
-
-            if template.shape[0] <= 0 or template.shape[1] <= 0:
-                return 50, 0.0
-            if crop2_top.shape[0] < template.shape[0] or crop2_top.shape[1] < template.shape[1]:
-                return 50, 0.0
-
-            result = cv2.matchTemplate(crop2_top, template, cv2.TM_CCOEFF)
-            if result.size > 0:
-                min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+            corr = cv2.matchTemplate(img2_top, img1_bottom[-100:, :], cv2.TM_CCOEFF)
+            if corr.size > 0:
+                _, _, _, max_loc = cv2.minMaxLoc(corr)
                 overlap_px = int(max_loc[1])
-                match_score = float(max_val)
-                overlap_px = max(10, min(overlap_px, 150))
+                overlap_px = max(0, min(overlap_px, 200))
 
-        return overlap_px, match_score
+        return overlap_px
 
     except Exception as e:
-        st.error(f"❌ Particle match error: {str(e)[:80]}")
-        return 50, 0.0
+        return 50
+
 
 def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
     """
@@ -974,8 +931,8 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
             img1_arr, img2_arr = img2_arr, img1_arr
             p1, p2 = p2, p1
 
-        # Find overlap using particle regions
-        overlap_px, match_score = find_overlap_from_particles(tile_files, p1, p2, stitch_edge)
+        # Find overlap using image correlation
+        overlap_px = find_overlap_from_particles(tile_files, p1, p2, stitch_edge)
 
         # Stitch full images with feather blending
         if stitch_edge in ['left', 'right']:
@@ -991,8 +948,8 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
                 for i in range(overlap_px):
                     alpha = i / overlap_px
                     stitched[:, overlap_start + i] = (
-                        (1 - alpha) * img1_arr[:, img1_arr.shape[1] - overlap_px + i].astype(np.float32) +
-                        alpha * img2_arr[:, i].astype(np.float32)
+                            (1 - alpha) * img1_arr[:, img1_arr.shape[1] - overlap_px + i].astype(np.float32) +
+                            alpha * img2_arr[:, i].astype(np.float32)
                     ).astype(np.uint8)
 
                 stitched[:, overlap_start + overlap_px:] = img2_arr[:, overlap_px:]
@@ -1011,8 +968,8 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
                 for i in range(overlap_px):
                     alpha = i / overlap_px
                     stitched[overlap_start + i] = (
-                        (1 - alpha) * img1_arr[img1_arr.shape[0] - overlap_px + i].astype(np.float32) +
-                        alpha * img2_arr[i].astype(np.float32)
+                            (1 - alpha) * img1_arr[img1_arr.shape[0] - overlap_px + i].astype(np.float32) +
+                            alpha * img2_arr[i].astype(np.float32)
                     ).astype(np.uint8)
 
                 stitched[overlap_start + overlap_px:] = img2_arr[overlap_px:]
@@ -1038,7 +995,7 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
             seam_x = img1_arr.shape[1] - overlap_px // 2
             stitched_arr = np.array(stitched_pil)
             if 0 <= seam_x < stitched_arr.shape[1]:
-                stitched_arr[:, max(0, int(seam_x-4)):min(stitched_arr.shape[1], int(seam_x+4))] = [255, 0, 0]
+                stitched_arr[:, max(0, int(seam_x - 4)):min(stitched_arr.shape[1], int(seam_x + 4))] = [255, 0, 0]
             stitched_pil = Image.fromarray(stitched_arr)
         else:
             x1_offset = 0
@@ -1052,7 +1009,7 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
             seam_y = img1_arr.shape[0] - overlap_px // 2
             stitched_arr = np.array(stitched_pil)
             if 0 <= seam_y < stitched_arr.shape[0]:
-                stitched_arr[max(0, int(seam_y-4)):min(stitched_arr.shape[0], int(seam_y+4)), :] = [255, 0, 0]
+                stitched_arr[max(0, int(seam_y - 4)):min(stitched_arr.shape[0], int(seam_y + 4)), :] = [255, 0, 0]
             stitched_pil = Image.fromarray(stitched_arr)
 
         # Calculate merged size from particle positions
@@ -1123,8 +1080,8 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
                 for i in range(overlap_px):
                     alpha = i / overlap_px
                     stitched[:, overlap_start + i] = (
-                        (1 - alpha) * img1[:, img1.shape[1] - overlap_px + i].astype(np.float32) +
-                        alpha * img2[:, i].astype(np.float32)
+                            (1 - alpha) * img1[:, img1.shape[1] - overlap_px + i].astype(np.float32) +
+                            alpha * img2[:, i].astype(np.float32)
                     ).astype(np.uint8)
                 stitched[:, overlap_start + overlap_px:] = img2[:, overlap_px:]
             else:
@@ -1139,8 +1096,8 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
                 for i in range(overlap_px):
                     alpha = i / overlap_px
                     stitched[overlap_start + i] = (
-                        (1 - alpha) * img1[img1.shape[0] - overlap_px + i].astype(np.float32) +
-                        alpha * img2[i].astype(np.float32)
+                            (1 - alpha) * img1[img1.shape[0] - overlap_px + i].astype(np.float32) +
+                            alpha * img2[i].astype(np.float32)
                     ).astype(np.uint8)
                 stitched[overlap_start + overlap_px:] = img2[overlap_px:]
             else:
@@ -1162,7 +1119,7 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
 
         draw.rectangle([(x1, y1), (x1 + w1, y1 + h1)], outline=(255, 165, 0), width=4)
         draw.rectangle([(x2 + x2_offset, y2 + y2_offset), (x2 + x2_offset + w2, y2 + y2_offset + h2)],
-                      outline=(255, 255, 100), width=4)
+                       outline=(255, 255, 100), width=4)
 
         x_min = min(x1, x2 + x2_offset)
         y_min = min(y1, y2 + y2_offset)
@@ -1181,11 +1138,13 @@ def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
 def push_undo():
     st.session_state.undo_stack.append(deepcopy(st.session_state.results))
 
+
 def create_stitched_preview(tile_files, p1, p2, stitch_edge):
     """
     Create stitched preview - delegates to create_simple_stitched_view
     """
     return create_simple_stitched_view(tile_files, p1, p2, stitch_edge)
+
 
 def display_particle_crop(pidx, p):
     """Display a single particle as a gallery thumbnail with ALL interactive features"""
@@ -1203,7 +1162,8 @@ def display_particle_crop(pidx, p):
                 stitch_edge = p.get("stitch_edge")
 
                 # Get the stitched image
-                stitched_img, merged_diameter_um = create_simple_stitched_view(st.session_state.tile_files, p, p2, stitch_edge)
+                stitched_img, merged_diameter_um = create_simple_stitched_view(st.session_state.tile_files, p, p2,
+                                                                               stitch_edge)
 
                 if stitched_img is not None:
                     # Resize for gallery display
@@ -1279,7 +1239,7 @@ def display_particle_crop(pidx, p):
         crop = tile_img_arr[y1:y2, x1:x2].copy()
         crop_pil = Image.fromarray(crop).convert('RGB')
         draw = ImageDraw.Draw(crop_pil)
-        draw.rectangle([(x-x1, y-y1), (x+w-x1, y+h-y1)], outline=(0, 100, 255), width=2)
+        draw.rectangle([(x - x1, y - y1), (x + w - x1, y + h - y1)], outline=(0, 100, 255), width=2)
 
         aspect_ratio = crop_pil.height / crop_pil.width
         new_height = int(250 * aspect_ratio)
@@ -1351,7 +1311,8 @@ def display_particle_crop(pidx, p):
                 push_undo()
                 st.session_state.results[pidx]["class"] = new_cls
                 # Recalculate size bin for new class
-                st.session_state.results[pidx]["size_bin"] = get_size_bin(st.session_state.results[pidx].get("diameter_um", 0))
+                st.session_state.results[pidx]["size_bin"] = get_size_bin(
+                    st.session_state.results[pidx].get("diameter_um", 0))
                 st.rerun()
 
             # DELETE BUTTON
@@ -1379,6 +1340,7 @@ def display_particle_crop(pidx, p):
 
     except Exception as e:
         st.error(f"❌ Display error: {str(e)[:200]}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -1477,9 +1439,12 @@ with st.sidebar:
                             else:
                                 # Non-merged particles count as 1
                                 total_active += 1
-                    total_edge_dups_deleted = len([p for p in final_particles if p.get("deleted") and p.get("duplicate_type") == "edge_duplicate"])
-                    total_overlabeled = len([p for p in final_particles if p.get("deleted") and p.get("duplicate_type") == "location_duplicate"])
-                    total_iou_deleted = len([p for p in final_particles if p.get("deleted") and p.get("duplicate_type") == "overlap_duplicate"])
+                    total_edge_dups_deleted = len([p for p in final_particles if
+                                                   p.get("deleted") and p.get("duplicate_type") == "edge_duplicate"])
+                    total_overlabeled = len([p for p in final_particles if
+                                             p.get("deleted") and p.get("duplicate_type") == "location_duplicate"])
+                    total_iou_deleted = len([p for p in final_particles if
+                                             p.get("deleted") and p.get("duplicate_type") == "overlap_duplicate"])
                     total_deleted = total_edge_dups_deleted + total_overlabeled + total_iou_deleted
 
                     # Now store in pipeline stats
@@ -1529,6 +1494,7 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Pipeline error: {e}")
                     import traceback
+
                     st.error(traceback.format_exc())
                     st.session_state.results = raw_particles
 
@@ -1543,7 +1509,7 @@ with st.sidebar:
         st.success(f"✅ {total} particles")
         # Count checked checkboxes
         selected_count = sum(1 for idx in range(len(st.session_state.results))
-                            if st.session_state.get(f"chk_{idx}", False))
+                             if st.session_state.get(f"chk_{idx}", False))
         st.write(f"**Selected:** {selected_count} (via checkboxes)")
 
     st.divider()
@@ -1559,7 +1525,8 @@ with st.sidebar:
                         if i > matched_idx:
                             continue  # Skip this one, it's already exported with the lower index
 
-                    status = "MERGED (stitched)" if p.get("merged") else ("AT_SEAM (check)" if p.get("at_seam") else "OK")
+                    status = "MERGED (stitched)" if p.get("merged") else (
+                        "AT_SEAM (check)" if p.get("at_seam") else "OK")
 
                     # If merged, try to get recalculated size
                     diameter_um = p["diameter_um"]
@@ -1571,7 +1538,8 @@ with st.sidebar:
                             particle_key = f"{p.get('tile_filename')}_{p.get('x')}_{p.get('y')}"
 
                             if particle_key not in st.session_state.stitch_cache:
-                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files, p)
+                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files,
+                                                                                          p)
                                 if merged_meta:
                                     st.session_state.stitch_cache[particle_key] = merged_meta
 
@@ -1622,7 +1590,7 @@ else:
         data[cls] = {}
         for b, _, _ in SIZE_BINS:
             count = len([p for p in st.session_state.results
-                        if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
+                         if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
             data[cls][b] = count
 
     rows = []
@@ -1657,16 +1625,16 @@ else:
         with st.expander("📊 Pipeline Breakdown", expanded=False):
             st.markdown(f"""
             **Raw Detections:** {stats['raw_detections']} 🔍
-            
+
             ↓ **Processing Steps:**
-            
+
             - **IOU Overlaps Removed:** {stats['iou_removed']} ❌
             - **Over-labeled Removed:** {stats['overlabel_removed']} ❌
             - **Edge Dups Removed:** {stats['edge_removed']} ❌
             - **Particles Stitched/Merged:** {stats.get('merged_count', 0)} 🔀 (counted as 1 particle)
-            
+
             ↓ **Final Results:**
-            
+
             - **Total Active Particles:** {stats['total_active']} ✅ (merged pairs = 1 count)
             - **Total Deleted:** {stats['total_deleted']} (sum of all removals)
             """)
@@ -1715,15 +1683,16 @@ else:
         total = len(st.session_state.results)
         deleted_count = len([p for p in st.session_state.results if p.get("deleted")])
         merged_count = len([p for p in st.session_state.results if p.get("merged")])
-        edge_dup_count = len([p for p in st.session_state.results if p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"])
+        edge_dup_count = len([p for p in st.session_state.results if
+                              p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"])
 
         for idx, p in enumerate(st.session_state.results):
-            # Categorize particle
+            # Categorize particle by duplicate_type
             is_merged = p.get("merged", False)
-            is_edge_dup = p.get("deleted") and p.get("duplicate_type") == "edge_duplicate"
-            is_overlabeled = p.get("deleted") and p.get("duplicate_type") == "location_duplicate"
-            is_deleted_only = p.get("deleted") and not is_overlabeled and not is_edge_dup
-            is_active = not p.get("deleted")
+            is_edge_dup = p.get("duplicate_type") == "edge_duplicate"
+            is_overlabeled = p.get("duplicate_type") == "location_duplicate"
+            is_deleted = p.get("deleted", False)
+            is_active = not is_deleted
 
             # Check if any filters are active
             any_filters_active = show_edge_dups or show_overlabeled or show_merged or show_deleted
@@ -1738,7 +1707,7 @@ else:
                     include = True
                 elif is_merged and show_merged:
                     include = True
-                elif show_deleted and p.get("deleted"):
+                elif show_deleted and is_deleted:
                     # Show ALL deleted particles
                     include = True
             else:
@@ -1802,7 +1771,7 @@ else:
                         continue
 
                     # Check if same location (within 20px)
-                    dist = ((p['x'] - kept_p['x'])**2 + (p['y'] - kept_p['y'])**2)**0.5
+                    dist = ((p['x'] - kept_p['x']) ** 2 + (p['y'] - kept_p['y']) ** 2) ** 0.5
                     if dist < 20:
                         paired_particles.append(((kept_idx, kept_p), (idx, p)))
                         seen_matches.add(kept_idx)
@@ -1810,9 +1779,11 @@ else:
                         break
 
         # Info
-        if show_edge_dups and len([p for p in paired_particles if p[0][1].get("duplicate_type") == "edge_duplicate"]) > 0:
+        if show_edge_dups and len(
+                [p for p in paired_particles if p[0][1].get("duplicate_type") == "edge_duplicate"]) > 0:
             st.info(f"✅ Showing edge duplicate pairs")
-        if show_overlabeled and len([p for p in paired_particles if p[0][1].get("duplicate_type") == "location_duplicate"]) > 0:
+        if show_overlabeled and len(
+                [p for p in paired_particles if p[0][1].get("duplicate_type") == "location_duplicate"]) > 0:
             st.info(f"✅ Showing over-labeled pairs")
 
         display_particles = paired_particles
@@ -1821,17 +1792,20 @@ else:
         display_particles = all_particles
 
     # Determine if showing pairs BEFORE using in pagination
-    is_showing_pairs = (show_edge_dups or show_overlabeled) and len(display_particles) > 0 and isinstance(display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
+    is_showing_pairs = (show_edge_dups or show_overlabeled) and len(display_particles) > 0 and isinstance(
+        display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
 
     if all_particles:
         # Show total count at top
-        st.metric("Total Particles Displayed", len(all_particles) if not is_showing_pairs else len(display_particles) * 2)
+        st.metric("Total Particles Displayed",
+                  len(all_particles) if not is_showing_pairs else len(display_particles) * 2)
         st.divider()
 
         # Select All button
         col_sel1, col_sel2 = st.columns([1, 1])
         with col_sel1:
-            if st.button(f"✅ Select All ({len(all_particles)} displayed)", use_container_width=True, key="select_all_gallery"):
+            if st.button(f"✅ Select All ({len(all_particles)} displayed)", use_container_width=True,
+                         key="select_all_gallery"):
                 # Set all checkbox states to True
                 for idx, p in all_particles:
                     st.session_state[f"chk_{idx}"] = True
@@ -1843,14 +1817,15 @@ else:
 
         # Show count of selected on this page
         page_selected = sum(1 for idx, p in all_particles
-                           if st.session_state.get(f"chk_{idx}", False))
-        total_selected = sum(1 for idx in range(len(st.session_state.results))
                             if st.session_state.get(f"chk_{idx}", False))
+        total_selected = sum(1 for idx in range(len(st.session_state.results))
+                             if st.session_state.get(f"chk_{idx}", False))
         st.caption(f"On this page: {page_selected} selected | Total: {total_selected} selected")
 
         # DELETE SELECTED IN THIS VIEW button
         if page_selected > 0:
-            if st.button(f"🗑️ Delete {page_selected} Selected (on this view)", use_container_width=True, key="delete_selected_view"):
+            if st.button(f"🗑️ Delete {page_selected} Selected (on this view)", use_container_width=True,
+                         key="delete_selected_view"):
                 push_undo()
                 count = 0
                 # Delete only checked particles that are currently displayed
@@ -1860,8 +1835,6 @@ else:
                         count += 1
                 st.success(f"✅ Deleted {count} selected particles from this view!")
                 st.rerun()
-
-
 
         # Pagination - calculate based on what we're displaying
         if is_showing_pairs:
@@ -1975,7 +1948,6 @@ else:
                     st.success(f"✅ Restored {count} particles!")
                     st.rerun()
 
-
             # Show only one viewer at a time
             if open_viewer is not None:
                 p = st.session_state.results[open_viewer]
@@ -2000,13 +1972,15 @@ else:
                                         st.subheader(f"🔀 Stitched Particle - {stitch_edge.upper()} Edge")
 
                                         # Get stitched preview
-                                        stitched_img, merged_diameter_um = create_stitched_preview(st.session_state.tile_files, p, p2, stitch_edge)
+                                        stitched_img, merged_diameter_um = create_stitched_preview(
+                                            st.session_state.tile_files, p, p2, stitch_edge)
 
                                         if stitched_img is not None:
                                             # Show stitched image
                                             fig = go.Figure()
                                             fig.add_trace(go.Image(z=stitched_img, name="Stitched"))
-                                            fig.update_layout(height=700, showlegend=False, margin=dict(b=0, l=0, r=0, t=30))
+                                            fig.update_layout(height=700, showlegend=False,
+                                                              margin=dict(b=0, l=0, r=0, t=30))
                                             fig.update_xaxes(scaleanchor="y", scaleratio=1)
                                             fig.update_yaxes(scaleanchor="x", scaleratio=1)
                                             st.plotly_chart(fig, use_container_width=True)
@@ -2017,7 +1991,7 @@ else:
                                             - Piece 1 Size: {p.get('diameter_um', 0):.1f}µm
                                             - Piece 2 Size: {p2.get('diameter_um', 0):.1f}µm
                                             - **Merged Size: {merged_diameter_um:.1f}µm**
-                                            
+
                                             **Visual Guide:**
                                             - 🟠 Orange Box: Piece 1
                                             - 🟡 Yellow Box: Piece 2
@@ -2028,21 +2002,24 @@ else:
                                             col_rej, col_del, col_cls = st.columns(3)
 
                                             with col_rej:
-                                                if st.button(f"❌ Reject Match", key=f"reject_viewer_{pidx}", use_container_width=True):
+                                                if st.button(f"❌ Reject Match", key=f"reject_viewer_{pidx}",
+                                                             use_container_width=True):
                                                     push_undo()
                                                     matched_idx = st.session_state.results[pidx].get("matched_stitch")
                                                     # Unmerge both particles in the pair
                                                     st.session_state.results[pidx]["merged"] = False
                                                     st.session_state.results[pidx]["matched_stitch"] = None
                                                     # Also unmerge the matched particle
-                                                    if matched_idx is not None and matched_idx < len(st.session_state.results):
+                                                    if matched_idx is not None and matched_idx < len(
+                                                            st.session_state.results):
                                                         st.session_state.results[matched_idx]["merged"] = False
                                                         st.session_state.results[matched_idx]["matched_stitch"] = None
                                                     st.success("✅ Match rejected! Both particles unmarked.")
                                                     st.rerun()
 
                                             with col_del:
-                                                if st.button(f"🗑️ Delete", key=f"del_viewer_{pidx}", use_container_width=True):
+                                                if st.button(f"🗑️ Delete", key=f"del_viewer_{pidx}",
+                                                             use_container_width=True):
                                                     push_undo()
                                                     st.session_state.results[pidx]["deleted"] = True
                                                     st.success("Deleted!")
@@ -2073,7 +2050,8 @@ else:
                                 fig.add_trace(go.Image(z=tile_img, name="Image"))
                                 x, y, w, h = p.get("x", 0), p.get("y", 0), p.get("w", 0), p.get("h", 0)
                                 if x and y and w and h:
-                                    fig.add_shape(type="rect", x0=x, y0=y, x1=x+w, y1=y+h, line=dict(color="rgb(255, 100, 0)", width=2))
+                                    fig.add_shape(type="rect", x0=x, y0=y, x1=x + w, y1=y + h,
+                                                  line=dict(color="rgb(255, 100, 0)", width=2))
                                 fig.update_layout(height=600, showlegend=False, margin=dict(b=0, l=0, r=0, t=30))
                                 fig.update_xaxes(scaleanchor="y", scaleratio=1)
                                 fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -2090,11 +2068,13 @@ else:
 
                                 with col2:
                                     st.write("**Point 2 (End):**")
-                                    x2 = st.number_input("X₂:", min_value=0, value=int(x+w) if (x and w) else 100, key=f"x2_{pidx}")
-                                    y2 = st.number_input("Y₂:", min_value=0, value=int(y+h) if (y and h) else 100, key=f"y2_{pidx}")
+                                    x2 = st.number_input("X₂:", min_value=0, value=int(x + w) if (x and w) else 100,
+                                                         key=f"x2_{pidx}")
+                                    y2 = st.number_input("Y₂:", min_value=0, value=int(y + h) if (y and h) else 100,
+                                                         key=f"y2_{pidx}")
 
                                 # Calculate distance
-                                dist_px = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                                dist_px = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
                                 dist_um = dist_px * CALIBRATION_UM_PER_PIXEL
 
                                 st.markdown("---")
@@ -2118,11 +2098,6 @@ else:
                                 st.error(f"❌ {str(e)[:60]}")
                 except Exception as e:
                     st.error(f"❌ Error: {str(e)[:60]}")
-
-
-
-
-
 
 st.divider()
 st.caption("💾 Session saved")
