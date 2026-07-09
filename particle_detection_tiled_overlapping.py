@@ -450,23 +450,28 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         tile_w = particle.get('tile_width', 1024)
         tile_h = particle.get('tile_height', 1024)
 
-        # Check if particle TOUCHES edge
-        touches_left = (x <= 5)
-        touches_right = (x + w >= tile_w - 5)
-        touches_top = (y <= 5)
-        touches_bottom = (y + h >= tile_h - 5)
+        # Check if particle is near edge (150px margin - was working!)
+        cx, cy = x + w/2, y + h/2
+        x_right = x + w
+        y_bottom = y + h
 
-        edges_touched = []
-        if touches_left: edges_touched.append('left')
-        if touches_right: edges_touched.append('right')
-        if touches_top: edges_touched.append('top')
-        if touches_bottom: edges_touched.append('bottom')
+        edge_margin = 150  # This is what was working before!
 
-        if not edges_touched:
+        edges_near = []
+        if cx < edge_margin or x < edge_margin:
+            edges_near.append('left')
+        if cx > tile_w - edge_margin or x_right > tile_w - edge_margin:
+            edges_near.append('right')
+        if cy < edge_margin or y < edge_margin:
+            edges_near.append('top')
+        if cy > tile_h - edge_margin or y_bottom > tile_h - edge_margin:
+            edges_near.append('bottom')
+
+        if not edges_near:
             continue
 
         # Score against neighbors
-        for edge in edges_touched:
+        for edge in edges_near:
             neighbor_file = neighbors_map[tile_file].get(edge)
             if not neighbor_file:
                 continue
@@ -478,14 +483,14 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 if neighbor.get('deleted') or neighbor.get('tile_filename') != neighbor_file:
                     continue
 
-                # Size can be different (one side might be larger)
+                # Size can be different (particles at seam might be different sizes)
                 d1 = particle.get('diameter_um', 50)
                 d2 = neighbor.get('diameter_um', 50)
                 size_diff = abs(d1 - d2) / max(d1, d2, 1)
-                if size_diff > 0.5:
+                if size_diff > 0.6:  # Very lenient: allows 60% difference
                     continue
 
-                # Neighbor should be near opposite edge
+                # Neighbor should be near opposite edge (more relaxed: 100px)
                 n_x, n_y = neighbor.get('x', 0), neighbor.get('y', 0)
                 n_w, n_h = neighbor.get('w', 0), neighbor.get('h', 0)
                 n_tile_w = neighbor.get('tile_width', 1024)
@@ -495,17 +500,35 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 opposite = opposite_edge_map.get(edge)
 
                 neighbor_near_opposite = False
-                if opposite == 'left' and n_x <= 50:
+                if opposite == 'left' and n_x <= 100:  # More relaxed: was 50
                     neighbor_near_opposite = True
-                elif opposite == 'right' and (n_x + n_w >= n_tile_w - 50):
+                elif opposite == 'right' and (n_x + n_w >= n_tile_w - 100):  # More relaxed: was 50
                     neighbor_near_opposite = True
-                elif opposite == 'top' and n_y <= 50:
+                elif opposite == 'top' and n_y <= 100:  # More relaxed: was 50
                     neighbor_near_opposite = True
-                elif opposite == 'bottom' and (n_y + n_h >= n_tile_h - 50):
+                elif opposite == 'bottom' and (n_y + n_h >= n_tile_h - 100):  # More relaxed: was 50
                     neighbor_near_opposite = True
 
                 if not neighbor_near_opposite:
                     continue
+
+                # Class match - be lenient (particles split at seams might have different labels)
+                n_class = neighbor.get('class')
+                p_class = particle.get('class')
+                if p_class == n_class:
+                    class_score = 1.0
+                elif (p_class in ['Fiber', 'Glass'] and n_class in ['Fiber', 'Glass']):
+                    class_score = 0.7
+                elif (p_class in ['Metallic', 'Other'] and n_class in ['Metallic', 'Other']):
+                    class_score = 0.7
+                else:
+                    class_score = 0.3
+
+                # Size match - more lenient (50% tolerance)
+                d1 = particle.get('diameter_um', 50)
+                d2 = neighbor.get('diameter_um', 50)
+                size_diff = abs(d1 - d2) / max(d1, d2, 1)
+                size_score = max(0, 1.0 - size_diff * 2.0)  # More forgiving
 
                 # Position check
                 cx = x + w/2
@@ -514,21 +537,22 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                     cy2 = n_y + n_h/2
                     y_diff = abs(cy - cy2)
                     max_h = max(h, n_h)
-                    pos_score = max(0, 1.0 - (y_diff / (max_h * 2.0)))
+                    pos_score = max(0, 1.0 - (y_diff / (max_h * 2.5)))  # More lenient
                 else:
                     cx2 = n_x + n_w/2
                     x_diff = abs(cx - cx2)
                     max_w = max(w, n_w)
-                    pos_score = max(0, 1.0 - (x_diff / (max_w * 2.0)))
+                    pos_score = max(0, 1.0 - (x_diff / (max_w * 2.5)))  # More lenient
 
-                score = pos_score
+                # Combined score (class * 0.25 + size * 0.35 + position * 0.40)
+                score = (class_score * 0.25) + (size_score * 0.35) + (pos_score * 0.40)
 
-                if score > best_score and score > 0.4:
+                if score > best_score and score > 0.35:  # Relaxed from 0.4 to 0.35
                     best_score = score
                     best_match = nidx
 
             # Mark for stitching
-            if best_match is not None and best_score > 0.4:
+            if best_match is not None and best_score > 0.35:  # Relaxed from 0.4 to 0.35
                 particles[pidx]['merged'] = True
                 particles[pidx]['merge_type'] = 'stitched'
                 particles[pidx]['matched_stitch'] = best_match
