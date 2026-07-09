@@ -1090,6 +1090,13 @@ else:
             data[cls][b] = count
 
     rows = []
+
+    totals_row = {"Material": "TOTAL"}
+    for b, _, _ in SIZE_BINS:
+        total = sum(data[cls][b] for cls in ["Fiber", "Glass", "Metallic", "Other"])
+        totals_row[b] = total
+    rows.append(totals_row)
+    
     for cls in ["Fiber", "Glass", "Metallic", "Other"]:
         row = {"Material": cls}
         for b, _, _ in SIZE_BINS:
@@ -1098,11 +1105,7 @@ else:
         rows.append(row)
 
     # Add totals row
-    totals_row = {"Material": "TOTAL"}
-    for b, _, _ in SIZE_BINS:
-        total = sum(data[cls][b] for cls in ["Fiber", "Glass", "Metallic", "Other"])
-        totals_row[b] = total
-    rows.append(totals_row)
+
 
     df = pd.DataFrame(rows)
     st.dataframe(df, width='stretch', height=200)
