@@ -1041,18 +1041,122 @@ if "tile_metadata" not in st.session_state:
 if "tile_files" not in st.session_state:
     st.session_state.tile_files = {}
 
-def create_stitched_preview(tile_files, p1, p2, stitch_edge):
+def find_overlap_from_particles(tile_files, p1, p2, stitch_edge):
     """
-    Stitch two tile images together and show particle + seam
+    Find overlap by matching particle regions only
+    Much more accurate than matching entire tiles
+    """
+    try:
+        file1 = tile_files.get(p1.get('tile_filename'))
+        file2 = tile_files.get(p2.get('tile_filename'))
 
-    Args:
-        tile_files: dict of {filename: file_obj}
-        p1: particle dict from current tile
-        p2: particle dict from neighbor tile
-        stitch_edge: 'left', 'right', 'top', or 'bottom'
+        if not file1 or not file2:
+            return 50  # safe default
+
+        img1 = cv2.cvtColor(np.array(Image.open(file1).convert('RGB')), cv2.COLOR_RGB2GRAY)
+        img2 = cv2.cvtColor(np.array(Image.open(file2).convert('RGB')), cv2.COLOR_RGB2GRAY)
+
+        # Extract particle regions with padding
+        padding = 80
+
+        x1, y1, w1, h1 = p1.get('x', 0), p1.get('y', 0), p1.get('w', 50), p1.get('h', 50)
+        x2, y2, w2, h2 = p2.get('x', 0), p2.get('y', 0), p2.get('w', 50), p2.get('h', 50)
+
+        # Crop particle 1 with bounds checking
+        crop1_x1 = max(0, x1 - padding)
+        crop1_y1 = max(0, y1 - padding)
+        crop1_x2 = min(img1.shape[1], x1 + w1 + padding)
+        crop1_y2 = min(img1.shape[0], y1 + h1 + padding)
+        crop1 = img1[crop1_y1:crop1_y2, crop1_x1:crop1_x2]
+
+        # Crop particle 2 with bounds checking
+        crop2_x1 = max(0, x2 - padding)
+        crop2_y1 = max(0, y2 - padding)
+        crop2_x2 = min(img2.shape[1], x2 + w2 + padding)
+        crop2_y2 = min(img2.shape[0], y2 + h2 + padding)
+        crop2 = img2[crop2_y1:crop2_y2, crop2_x1:crop2_x2]
+
+        # Check if crops are valid
+        if crop1.size == 0 or crop2.size == 0:
+            return 50
+
+        # Normalize for matching
+        crop1_norm = crop1.astype(np.float32)
+        crop2_norm = crop2.astype(np.float32)
+
+        crop1_norm = (crop1_norm - crop1_norm.mean()) / (crop1_norm.std() + 1e-5)
+        crop2_norm = (crop2_norm - crop2_norm.mean()) / (crop2_norm.std() + 1e-5)
+
+        overlap_px = 0
+
+        if stitch_edge in ['left', 'right']:
+            # Horizontal: match right edge of crop1 with left edge of crop2
+            edge_width = min(60, crop1.shape[1] // 2, crop2.shape[1] // 2)
+
+            if edge_width < 10:
+                return 50
+
+            crop1_right = crop1_norm[:, -edge_width:].astype(np.float32)
+            crop2_left = crop2_norm[:, :edge_width].astype(np.float32)
+
+            # Template must be smaller than search image
+            template_width = min(30, crop1_right.shape[1] // 2)
+            if template_width < 5:
+                return 50
+
+            template = crop1_right[:, -template_width:]
+
+            # Check sizes before matching
+            if template.shape[0] <= 0 or template.shape[1] <= 0:
+                return 50
+            if crop2_left.shape[0] < template.shape[0] or crop2_left.shape[1] < template.shape[1]:
+                return 50
+
+            result = cv2.matchTemplate(crop2_left, template, cv2.TM_CCOEFF)
+            if result.size > 0:
+                _, _, _, max_loc = cv2.minMaxLoc(result)
+                overlap_px = int(max_loc[0])
+                overlap_px = max(10, min(overlap_px, 150))
+        else:
+            # Vertical: match bottom edge of crop1 with top edge of crop2
+            edge_height = min(60, crop1.shape[0] // 2, crop2.shape[0] // 2)
+
+            if edge_height < 10:
+                return 50
+
+            crop1_bottom = crop1_norm[-edge_height:, :].astype(np.float32)
+            crop2_top = crop2_norm[:edge_height, :].astype(np.float32)
+
+            template_height = min(30, crop1_bottom.shape[0] // 2)
+            if template_height < 5:
+                return 50
+
+            template = crop1_bottom[-template_height:, :]
+
+            if template.shape[0] <= 0 or template.shape[1] <= 0:
+                return 50
+            if crop2_top.shape[0] < template.shape[0] or crop2_top.shape[1] < template.shape[1]:
+                return 50
+
+            result = cv2.matchTemplate(crop2_top, template, cv2.TM_CCOEFF)
+            if result.size > 0:
+                _, _, _, max_loc = cv2.minMaxLoc(result)
+                overlap_px = int(max_loc[1])
+                overlap_px = max(10, min(overlap_px, 150))
+
+        return overlap_px
+
+    except Exception as e:
+        st.error(f"❌ Particle match error: {str(e)[:80]}")
+        return 50
+
+def create_simple_stitched_view(tile_files, p1, p2, stitch_edge):
+    """
+    Stitch images using particle-region matching for accurate overlap detection
 
     Returns:
-        stitched_img: numpy array of stitched image with seam marked and particle boxed
+        stitched_img: aligned image with seam marked and boxes drawn
+        merged_diameter_um: actual measured diameter from merged particle
     """
     try:
         # Load both tile images
@@ -1060,122 +1164,288 @@ def create_stitched_preview(tile_files, p1, p2, stitch_edge):
         file2 = tile_files.get(p2.get('tile_filename'))
 
         if not file1 or not file2:
-            return None
+            return None, 0
 
         img1 = Image.open(file1).convert('RGB')
         img2 = Image.open(file2).convert('RGB')
 
-        img1 = np.array(img1)
-        img2 = np.array(img2)
+        img1_arr = np.array(img1)
+        img2_arr = np.array(img2)
 
-        # Determine stitch direction and create combined image
-        if stitch_edge in ['left', 'right']:
-            # Horizontal stitch - place side by side
-            if stitch_edge == 'left':
-                # p1 touches LEFT edge, neighbor is to the LEFT (img2)
-                # So stitch should be: img2 (left) + img1 (right)
-                stitched = np.hstack([img2, img1])
-                seam_x = img2.shape[1]  # Seam at boundary
-                offset_x = img2.shape[1]  # p1 is offset by img2 width (to the right)
-                offset_y = 0
-            else:  # right
-                # p1 touches RIGHT edge, neighbor is to the RIGHT (img2)
-                # So stitch should be: img1 (left) + img2 (right)
-                stitched = np.hstack([img1, img2])
-                seam_x = img1.shape[1]  # Seam at boundary
-                offset_x = 0  # p1 stays on left
-                offset_y = 0
-        else:
-            # Vertical stitch - place top/bottom
-            if stitch_edge == 'top':
-                # p1 touches TOP edge, neighbor is ABOVE (img2)
-                # So stitch should be: img2 (above) + img1 (current)
-                stitched = np.vstack([img2, img1])
-                seam_y = img2.shape[0]  # Seam at boundary between them
-                offset_x = 0
-                offset_y = img2.shape[0]  # p1 is offset by img2 height (below img2)
-            else:  # bottom
-                # p1 touches BOTTOM edge, neighbor is BELOW (img2)
-                # So stitch should be: img1 (current) + img2 (below)
-                stitched = np.vstack([img1, img2])
-                seam_y = img1.shape[0]  # Seam at boundary between them
-                offset_x = 0
-                offset_y = 0  # p1 stays at top
-
-        # Draw seam in red
-        if stitch_edge in ['left', 'right']:
-            stitched[0:stitched.shape[0], seam_x-2:seam_x+2] = [255, 0, 0]  # Red seam
-        else:
-            stitched[seam_y-2:seam_y+2, 0:stitched.shape[1]] = [255, 0, 0]  # Red seam
-
-        # Draw box around p1 particle
-        x1, y1, w1, h1 = p1.get('x', 0), p1.get('y', 0), p1.get('w', 0), p1.get('h', 0)
-        x1_stitched = int(x1 + offset_x)
-        y1_stitched = int(y1 + offset_y)
-
-        # Orange box for p1
-        cv2.rectangle(stitched,
-                     (int(x1_stitched), int(y1_stitched)),
-                     (int(x1_stitched + w1), int(y1_stitched + h1)),
-                     (255, 165, 0), 2)  # Orange
-
-        # Draw lighter box around p2 particle (for reference)
-        x2, y2, w2, h2 = p2.get('x', 0), p2.get('y', 0), p2.get('w', 0), p2.get('h', 0)
+        # Reorder based on stitch edge
         if stitch_edge == 'left':
-            # p2 is in img2 which is on the left (offset 0)
-            x2_stitched = int(x2)
-            y2_stitched = int(y2)
-        elif stitch_edge == 'right':
-            # p2 is in img2 which is on the right (offset img1.shape[1])
-            x2_stitched = int(x2 + img1.shape[1])
-            y2_stitched = int(y2)
+            img1_arr, img2_arr = img2_arr, img1_arr
+            p1, p2 = p2, p1
         elif stitch_edge == 'top':
-            # p2 is in img2 which is on top (offset 0)
-            x2_stitched = int(x2)
-            y2_stitched = int(y2)
-        else:  # bottom
-            # p2 is in img2 which is on bottom (offset img1.shape[0])
-            x2_stitched = int(x2)
-            y2_stitched = int(y2 + img1.shape[0])
+            img1_arr, img2_arr = img2_arr, img1_arr
+            p1, p2 = p2, p1
 
-        # Light yellow box for p2
-        cv2.rectangle(stitched,
-                     (int(x2_stitched), int(y2_stitched)),
-                     (int(x2_stitched + w2), int(y2_stitched + h2)),
-                     (255, 255, 100), 1)  # Light yellow (thinner)
+        # Find overlap using particle regions
+        overlap_px = find_overlap_from_particles(tile_files, p1, p2, stitch_edge)
 
-        return stitched
+        # Stitch full images with feather blending
+        if stitch_edge in ['left', 'right']:
+            new_width = img1_arr.shape[1] + img2_arr.shape[1] - overlap_px
+            stitched = np.zeros((img1_arr.shape[0], new_width, 3), dtype=np.uint8)
+
+            # Place first image
+            stitched[:, :img1_arr.shape[1]] = img1_arr
+
+            # Blend overlap region
+            if overlap_px > 5:
+                overlap_start = img1_arr.shape[1] - overlap_px
+                for i in range(overlap_px):
+                    alpha = i / overlap_px
+                    stitched[:, overlap_start + i] = (
+                        (1 - alpha) * img1_arr[:, img1_arr.shape[1] - overlap_px + i].astype(np.float32) +
+                        alpha * img2_arr[:, i].astype(np.float32)
+                    ).astype(np.uint8)
+
+                stitched[:, overlap_start + overlap_px:] = img2_arr[:, overlap_px:]
+            else:
+                stitched[:, img1_arr.shape[1]:] = img2_arr
+        else:
+            new_height = img1_arr.shape[0] + img2_arr.shape[0] - overlap_px
+            stitched = np.zeros((new_height, img1_arr.shape[1], 3), dtype=np.uint8)
+
+            # Place first image
+            stitched[:img1_arr.shape[0]] = img1_arr
+
+            # Blend overlap region
+            if overlap_px > 5:
+                overlap_start = img1_arr.shape[0] - overlap_px
+                for i in range(overlap_px):
+                    alpha = i / overlap_px
+                    stitched[overlap_start + i] = (
+                        (1 - alpha) * img1_arr[img1_arr.shape[0] - overlap_px + i].astype(np.float32) +
+                        alpha * img2_arr[i].astype(np.float32)
+                    ).astype(np.uint8)
+
+                stitched[overlap_start + overlap_px:] = img2_arr[overlap_px:]
+            else:
+                stitched[img1_arr.shape[0]:] = img2_arr
+
+        # Draw boxes and seam
+        stitched_pil = Image.fromarray(stitched)
+        draw = ImageDraw.Draw(stitched_pil)
+
+        x1, y1, w1, h1 = p1.get('x', 0), p1.get('y', 0), p1.get('w', 50), p1.get('h', 50)
+        x2, y2, w2, h2 = p2.get('x', 0), p2.get('y', 0), p2.get('w', 50), p2.get('h', 50)
+
+        if stitch_edge in ['left', 'right']:
+            x1_offset = 0
+            y1_offset = 0
+            x2_offset = img1_arr.shape[1] - overlap_px if overlap_px > 0 else img1_arr.shape[1]
+            y2_offset = 0
+
+            draw.rectangle([(x1, y1), (x1 + w1, y1 + h1)], outline=(255, 165, 0), width=2)
+            draw.rectangle([(x2 + x2_offset, y2), (x2 + x2_offset + w2, y2 + h2)], outline=(255, 255, 100), width=2)
+
+            seam_x = img1_arr.shape[1] - overlap_px // 2
+            stitched_arr = np.array(stitched_pil)
+            if 0 <= seam_x < stitched_arr.shape[1]:
+                stitched_arr[:, max(0, int(seam_x-2)):min(stitched_arr.shape[1], int(seam_x+2))] = [255, 0, 0]
+            stitched_pil = Image.fromarray(stitched_arr)
+        else:
+            x1_offset = 0
+            y1_offset = 0
+            x2_offset = 0
+            y2_offset = img1_arr.shape[0] - overlap_px if overlap_px > 0 else img1_arr.shape[0]
+
+            draw.rectangle([(x1, y1), (x1 + w1, y1 + h1)], outline=(255, 165, 0), width=2)
+            draw.rectangle([(x2, y2 + y2_offset), (x2 + w2, y2 + y2_offset + h2)], outline=(255, 255, 100), width=2)
+
+            seam_y = img1_arr.shape[0] - overlap_px // 2
+            stitched_arr = np.array(stitched_pil)
+            if 0 <= seam_y < stitched_arr.shape[0]:
+                stitched_arr[max(0, int(seam_y-2)):min(stitched_arr.shape[0], int(seam_y+2)), :] = [255, 0, 0]
+            stitched_pil = Image.fromarray(stitched_arr)
+
+        # Calculate merged size from particle positions
+        x_min = min(x1 + x1_offset, x2 + x2_offset)
+        y_min = min(y1 + y1_offset, y2 + y2_offset)
+        x_max = max(x1 + x1_offset + w1, x2 + x2_offset + w2)
+        y_max = max(y1 + y1_offset + h1, y2 + y2_offset + h2)
+
+        merged_diameter_px = max(x_max - x_min, y_max - y_min)
+        merged_diameter_um = merged_diameter_px * CALIBRATION_UM_PER_PIXEL
+
+        return np.array(stitched_pil), merged_diameter_um
 
     except Exception as e:
         st.error(f"❌ Stitch error: {str(e)[:100]}")
-        return None
+        return None, 0
+    """
+    Fallback stitching if Stitcher fails
+    Uses CLAHE + edge-based approach
+    """
+    try:
+        gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray1_clahe = clahe.apply(gray1)
+        gray2_clahe = clahe.apply(gray2)
+
+        edges1 = cv2.Canny(gray1_clahe, 50, 150)
+        edges2 = cv2.Canny(gray2_clahe, 50, 150)
+
+        overlap_px = 0
+        if stitch_edge in ['left', 'right']:
+            img1_right = edges1[:, -150:] if edges1.shape[1] >= 150 else edges1[:, -100:]
+            img2_left = edges2[:, :150] if edges2.shape[1] >= 150 else edges2[:, :100]
+
+            if img1_right.size > 0 and img2_left.size > 0:
+                try:
+                    result = cv2.matchTemplate(img2_left, img1_right[-50:, :], cv2.TM_CCOEFF)
+                    if result.size > 0:
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                        overlap_px = int(max_loc[0])
+                        overlap_px = max(0, min(overlap_px, 150))
+                except:
+                    overlap_px = 50
+        else:
+            img1_bottom = edges1[-150:, :] if edges1.shape[0] >= 150 else edges1[-100:, :]
+            img2_top = edges2[:150, :] if edges2.shape[0] >= 150 else edges2[:100, :]
+
+            if img1_bottom.size > 0 and img2_top.size > 0:
+                try:
+                    result = cv2.matchTemplate(img2_top, img1_bottom[-50:, :], cv2.TM_CCOEFF)
+                    if result.size > 0:
+                        min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
+                        overlap_px = int(max_loc[1])
+                        overlap_px = max(0, min(overlap_px, 150))
+                except:
+                    overlap_px = 50
+
+        # Build stitched image
+        if stitch_edge in ['left', 'right']:
+            new_width = img1.shape[1] + img2.shape[1] - overlap_px
+            stitched = np.zeros((img1.shape[0], new_width, 3), dtype=np.uint8)
+            stitched[:, :img1.shape[1]] = img1
+
+            if overlap_px > 5:
+                overlap_start = img1.shape[1] - overlap_px
+                for i in range(overlap_px):
+                    alpha = i / overlap_px
+                    stitched[:, overlap_start + i] = (
+                        (1 - alpha) * img1[:, img1.shape[1] - overlap_px + i].astype(np.float32) +
+                        alpha * img2[:, i].astype(np.float32)
+                    ).astype(np.uint8)
+                stitched[:, overlap_start + overlap_px:] = img2[:, overlap_px:]
+            else:
+                stitched[:, img1.shape[1]:] = img2
+        else:
+            new_height = img1.shape[0] + img2.shape[0] - overlap_px
+            stitched = np.zeros((new_height, img1.shape[1], 3), dtype=np.uint8)
+            stitched[:img1.shape[0]] = img1
+
+            if overlap_px > 5:
+                overlap_start = img1.shape[0] - overlap_px
+                for i in range(overlap_px):
+                    alpha = i / overlap_px
+                    stitched[overlap_start + i] = (
+                        (1 - alpha) * img1[img1.shape[0] - overlap_px + i].astype(np.float32) +
+                        alpha * img2[i].astype(np.float32)
+                    ).astype(np.uint8)
+                stitched[overlap_start + overlap_px:] = img2[overlap_px:]
+            else:
+                stitched[img1.shape[0]:] = img2
+
+        stitched_rgb = cv2.cvtColor(stitched, cv2.COLOR_BGR2RGB)
+        stitched_pil = Image.fromarray(stitched_rgb)
+        draw = ImageDraw.Draw(stitched_pil)
+
+        x1, y1, w1, h1 = p1.get('x', 0), p1.get('y', 0), p1.get('w', 50), p1.get('h', 50)
+        x2, y2, w2, h2 = p2.get('x', 0), p2.get('y', 0), p2.get('w', 50), p2.get('h', 50)
+
+        if stitch_edge in ['left', 'right']:
+            x2_offset = img1.shape[1] - overlap_px
+            y2_offset = 0
+        else:
+            x2_offset = 0
+            y2_offset = img1.shape[0] - overlap_px
+
+        draw.rectangle([(x1, y1), (x1 + w1, y1 + h1)], outline=(255, 165, 0), width=2)
+        draw.rectangle([(x2 + x2_offset, y2 + y2_offset), (x2 + x2_offset + w2, y2 + y2_offset + h2)],
+                      outline=(255, 255, 100), width=2)
+
+        x_min = min(x1, x2 + x2_offset)
+        y_min = min(y1, y2 + y2_offset)
+        x_max = max(x1 + w1, x2 + x2_offset + w2)
+        y_max = max(y1 + h1, y2 + y2_offset + h2)
+
+        merged_diameter_px = max(x_max - x_min, y_max - y_min)
+        merged_diameter_um = merged_diameter_px * CALIBRATION_UM_PER_PIXEL
+
+        return np.array(stitched_pil), merged_diameter_um
+
+    except:
+        return None, 0
 
 
+def push_undo():
     st.session_state.undo_stack.append(deepcopy(st.session_state.results))
+
+def create_stitched_preview(tile_files, p1, p2, stitch_edge):
+    """
+    Create stitched preview - delegates to create_simple_stitched_view
+    """
+    return create_simple_stitched_view(tile_files, p1, p2, stitch_edge)
 
 def display_particle_crop(pidx, p):
     """Display a single particle as a gallery thumbnail with ALL interactive features"""
     try:
-        # Check if this is a merged particle - show stitched preview
+        # Check if this is a merged particle - show 2-view gallery
         if p.get("merged") and p.get("matched_stitch") is not None:
             matched_idx = p.get("matched_stitch")
             if matched_idx < len(st.session_state.results):
                 p2 = st.session_state.results[matched_idx]
                 stitch_edge = p.get("stitch_edge")
 
-                stitched_img = create_stitched_preview(st.session_state.tile_files, p, p2, stitch_edge)
-                if stitched_img is not None:
-                    # Resize for display
-                    h, w = stitched_img.shape[0], stitched_img.shape[1]
-                    aspect_ratio = h / w
-                    new_height = int(250 * aspect_ratio)
-                    stitched_pil = Image.fromarray(stitched_img.astype('uint8')).resize((250, new_height), Image.Resampling.LANCZOS)
-                    st.image(stitched_pil)
+                col1, col2 = st.columns(2)
 
-                    # Caption for merged particle
-                    caption = f"🔀 MERGED - {stitch_edge.upper()}\n{p.get('class', '?')} | {p.get('size_bin', '?')}\n{p.get('diameter_um', '?'):.1f}µm\nScore: {p.get('stitch_score', 0):.3f}"
-                    st.caption(caption)
-                    return
+                # Piece 1 with box
+                with col1:
+                    f1 = st.session_state.tile_files.get(p.get('tile_filename'))
+                    if f1:
+                        img_p1 = Image.open(f1).convert('RGB')
+                        # Draw box on piece 1
+                        draw = ImageDraw.Draw(img_p1)
+                        x, y, w, h = p.get('x', 0), p.get('y', 0), p.get('w', 50), p.get('h', 50)
+                        draw.rectangle([(x, y), (x+w, y+h)], outline=(255, 165, 0), width=3)  # Orange box
+
+                        # Resize to fill column (max 300 height)
+                        img_p1.thumbnail((400, 300), Image.Resampling.LANCZOS)
+                        st.image(img_p1)
+                        st.caption(f"Piece 1 - {p.get('class', '?')}\n{p.get('diameter_um', '?'):.1f}µm")
+
+                # Piece 2 with box
+                with col2:
+                    f2 = st.session_state.tile_files.get(p2.get('tile_filename'))
+                    if f2:
+                        img_p2 = Image.open(f2).convert('RGB')
+                        # Draw box on piece 2
+                        draw = ImageDraw.Draw(img_p2)
+                        x2, y2, w2, h2 = p2.get('x', 0), p2.get('y', 0), p2.get('w', 50), p2.get('h', 50)
+                        draw.rectangle([(x2, y2), (x2+w2, y2+h2)], outline=(255, 255, 100), width=3)  # Light yellow box
+
+                        # Resize to fill column (max 300 height)
+                        img_p2.thumbnail((400, 300), Image.Resampling.LANCZOS)
+                        st.image(img_p2)
+                        st.caption(f"Piece 2 - {p2.get('class', '?')}\n{p2.get('diameter_um', '?'):.1f}µm")
+
+                # Info and reject button
+                st.caption(f"🔀 MERGED - {stitch_edge.upper()}\nScore: {p.get('stitch_score', 0):.3f}")
+
+                if st.button("❌ Reject Match", key=f"reject_{pidx}", use_container_width=True):
+                    st.session_state.results[pidx]["merged"] = False
+                    st.session_state.results[pidx]["matched_stitch"] = None
+                    push_undo()
+                    st.success("Marked as non-match")
+                    st.rerun()
+
+                return
 
         # Normal single particle display
         filename = p.get("tile_filename")
@@ -1886,33 +2156,41 @@ else:
                         with st.expander(f"📸 {filename} - Particle #{pidx}", expanded=True):
                             st.markdown("---")
                             try:
-                                # Check if this is a merged particle - show stitched image
+                                # Check if this is a merged particle - show both pieces with boxes
                                 if p.get("merged") and p.get("matched_stitch") is not None:
                                     matched_idx = p.get("matched_stitch")
                                     if matched_idx < len(st.session_state.results):
                                         p2 = st.session_state.results[matched_idx]
                                         stitch_edge = p.get("stitch_edge")
 
-                                        st.subheader(f"🔀 Stitched Particle Preview - {stitch_edge.upper()} Edge")
+                                        st.subheader(f"🔀 Stitched Particle - {stitch_edge.upper()} Edge")
 
-                                        stitched_img = create_stitched_preview(st.session_state.tile_files, p, p2, stitch_edge)
+                                        # Get stitched preview
+                                        stitched_img, merged_diameter_um = create_stitched_preview(st.session_state.tile_files, p, p2, stitch_edge)
+
                                         if stitched_img is not None:
+                                            # Show stitched image
                                             fig = go.Figure()
                                             fig.add_trace(go.Image(z=stitched_img, name="Stitched"))
-                                            fig.update_layout(height=600, showlegend=False, margin=dict(b=0, l=0, r=0, t=30))
+                                            fig.update_layout(height=700, showlegend=False, margin=dict(b=0, l=0, r=0, t=30))
                                             fig.update_xaxes(scaleanchor="y", scaleratio=1)
                                             fig.update_yaxes(scaleanchor="x", scaleratio=1)
                                             st.plotly_chart(fig, use_container_width=True)
 
                                             st.info(f"""
-                                            **Stitch Details:**
-                                            - Edge: {stitch_edge.upper()}
-                                            - Stitch Score: {p.get('stitch_score', 0):.3f}
-                                            - Partner Particle Index: {matched_idx}
-                                            - Orange Box: This particle
-                                            - Light Yellow Box: Partner particle
-                                            - Red Line: Seam between tiles
+                                            **Stitched Particle Details:**
+                                            - Stitch Edge: {stitch_edge.upper()}
+                                            - Match Score: {p.get('stitch_score', 0):.3f}
+                                            - Piece 1 Size: {p.get('diameter_um', 0):.1f}µm
+                                            - Piece 2 Size: {p2.get('diameter_um', 0):.1f}µm
+                                            - **Merged Size: {merged_diameter_um:.1f}µm**
+                                            
+                                            **Visual Guide:**
+                                            - 🟠 Orange Box: Piece 1
+                                            - 🟡 Yellow Box: Piece 2
+                                            - 🔴 Red Line: Seam between tiles
                                             """)
+
                                         st.markdown("---")
 
                                 file_obj = st.session_state.tile_files[filename]
