@@ -38,7 +38,7 @@ st.set_page_config(page_title="tiled dirt sniffer", page_icon="icon.ico", layout
 st.title("🐕 tiled_dirt_sniffer: Review Dashboard")
 
 # ============================================================
-# Initialize Session State
+# Initialize Session State (FIRST!)
 # ============================================================
 if 'results' not in st.session_state:
     st.session_state.results = []
@@ -56,6 +56,38 @@ if 'stitch_cache' not in st.session_state:
     st.session_state.stitch_cache = {}
 if 'pipeline_stats' not in st.session_state:
     st.session_state.pipeline_stats = {}
+if 'notifications_enabled' not in st.session_state:
+    st.session_state.notifications_enabled = False
+if 'notif_shown' not in st.session_state:
+    st.session_state.notif_shown = False
+
+# Notification button - compact
+with st.sidebar:
+    if st.button("🔔 Enable Notifications", key="notif_btn"):
+        st.session_state.notifications_enabled = True
+
+if st.session_state.notifications_enabled and not st.session_state.get('notif_shown'):
+    st.info("✅ Notifications enabled!")
+    st.session_state.notif_shown = True
+    st.markdown("""
+    <script>
+    // Request notification permission
+    if (Notification.permission === 'default') {
+        Notification.requestPermission();
+    }
+
+    // Function to show notification
+    window.showNotification = function(title, options) {
+        if (Notification.permission === 'granted') {
+            new Notification(title, {
+                icon: '🐕',
+                ...options
+            });
+        }
+    };
+    </script>
+    """, unsafe_allow_html=True)
+
 
 # ============================================================
 # GPU/Device Detection - Support NVIDIA and Intel Arc
@@ -108,6 +140,7 @@ def detect_device():
     device_info["backend"] = "CPU"
     return device_info
 
+
 # Detect device on startup
 DEVICE_INFO = detect_device()
 DEVICE = DEVICE_INFO["device"]
@@ -128,6 +161,7 @@ SIZE_BINS = [
     ("J: 1000μm+ (0 pcs)", 1000, float("inf")),
 ]
 
+
 @st.cache_resource
 def load_model():
     if not os.path.exists(MODEL_PATH):
@@ -137,12 +171,14 @@ def load_model():
     # Don't use .to() with YOLO models
     return model
 
+
 def get_size_bin(diameter_um):
     """Get size bin label for a diameter in µm"""
     for label, lo, hi in SIZE_BINS:
         if lo <= diameter_um < hi:
             return label
     return SIZE_BINS[-1][0]
+
 
 def simple_tile_dedup(raw_particles, tile_metadata):
     """
@@ -171,7 +207,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
             if p1.get('deleted'):
                 continue
 
-            for j, p2 in enumerate(particles[i+1:], start=i+1):
+            for j, p2 in enumerate(particles[i + 1:], start=i + 1):
                 if p2.get('deleted'):
                     continue
 
@@ -180,12 +216,12 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                     continue
 
                 # Same spot (within 20px)
-                cx1 = p1.get('x', 0) + p1.get('w', 0)/2
-                cy1 = p1.get('y', 0) + p1.get('h', 0)/2
-                cx2 = p2.get('x', 0) + p2.get('w', 0)/2
-                cy2 = p2.get('y', 0) + p2.get('h', 0)/2
+                cx1 = p1.get('x', 0) + p1.get('w', 0) / 2
+                cy1 = p1.get('y', 0) + p1.get('h', 0) / 2
+                cx2 = p2.get('x', 0) + p2.get('w', 0) / 2
+                cy2 = p2.get('y', 0) + p2.get('h', 0) / 2
 
-                dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
+                dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
 
                 if dist < 20:
                     if p1['confidence'] > p2['confidence']:
@@ -229,7 +265,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         if p1.get('deleted'):
             continue
 
-        for j, p2 in enumerate(particles[i+1:], start=i+1):
+        for j, p2 in enumerate(particles[i + 1:], start=i + 1):
             if p2.get('deleted'):
                 continue
 
@@ -240,7 +276,8 @@ def simple_tile_dedup(raw_particles, tile_metadata):
             # Size & class must match
             if p1.get('class') != p2.get('class'):
                 continue
-            if abs(p1.get('diameter_um', 0) - p2.get('diameter_um', 0)) / max(p1.get('diameter_um', 1), p2.get('diameter_um', 1)) > 0.2:
+            if abs(p1.get('diameter_um', 0) - p2.get('diameter_um', 0)) / max(p1.get('diameter_um', 1),
+                                                                              p2.get('diameter_um', 1)) > 0.2:
                 continue
 
             # Check IOU
@@ -279,7 +316,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         # Check if at edge
         x, y = particle.get('x', 0), particle.get('y', 0)
         w, h = particle.get('w', 0), particle.get('h', 0)
-        cx, cy = x + w/2, y + h/2
+        cx, cy = x + w / 2, y + h / 2
 
         tile_w = particle.get('tile_width', 1024)
         tile_h = particle.get('tile_height', 1024)
@@ -317,11 +354,11 @@ def simple_tile_dedup(raw_particles, tile_metadata):
 
                 # Position match (perpendicular to boundary)
                 if edge in ['left', 'right']:
-                    y_diff = abs(cy - (neighbor['y'] + neighbor['h']/2))
+                    y_diff = abs(cy - (neighbor['y'] + neighbor['h'] / 2))
                     y_max = max(h, neighbor['h']) * 2
                     pos_score = max(0, 1.0 - (y_diff / y_max))
                 else:
-                    x_diff = abs(cx - (neighbor['x'] + neighbor['w']/2))
+                    x_diff = abs(cx - (neighbor['x'] + neighbor['w'] / 2))
                     x_max = max(w, neighbor['w']) * 2
                     pos_score = max(0, 1.0 - (x_diff / x_max))
 
@@ -353,7 +390,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         if p1.get('deleted'):
             continue
 
-        for j, p2 in enumerate(particles[i+1:], start=i+1):
+        for j, p2 in enumerate(particles[i + 1:], start=i + 1):
             if p2.get('deleted'):
                 continue
 
@@ -366,12 +403,12 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 continue
 
             # Same spot (within 20px)
-            cx1 = p1['x'] + p1['w']/2
-            cy1 = p1['y'] + p1['h']/2
-            cx2 = p2['x'] + p2['w']/2
-            cy2 = p2['y'] + p2['h']/2
+            cx1 = p1['x'] + p1['w'] / 2
+            cy1 = p1['y'] + p1['h'] / 2
+            cx2 = p2['x'] + p2['w'] / 2
+            cy2 = p2['y'] + p2['h'] / 2
 
-            dist = ((cx1 - cx2)**2 + (cy1 - cy2)**2)**0.5
+            dist = ((cx1 - cx2) ** 2 + (cy1 - cy2) ** 2) ** 0.5
 
             if dist < 20:
                 # Delete lower confidence
@@ -389,8 +426,8 @@ def simple_tile_dedup(raw_particles, tile_metadata):
 
     st.write(f"  ✅ Removed {overlabel_removed} over-labeled particles")
 
-    return particles, {"iou_removed": iou_removed, "edge_duplicates_found": edge_dup_count, "overlabel_removed": overlabel_removed}
-
+    return particles, {"iou_removed": iou_removed, "edge_duplicates_found": edge_dup_count,
+                       "overlabel_removed": overlabel_removed}
 
     """
     Integrated edge dedup - finds tile boundary duplicates.
@@ -425,7 +462,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         # Check if at edge
         x, y = particle.get('x', 0), particle.get('y', 0)
         w, h = particle.get('w', 0), particle.get('h', 0)
-        cx, cy = x + w/2, y + h/2
+        cx, cy = x + w / 2, y + h / 2
 
         at_edges = []
         if cx < edge_margin: at_edges.append('left')
@@ -455,7 +492,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 # Check if neighbor also at edge
                 nx, ny = neighbor.get('x', 0), neighbor.get('y', 0)
                 nw, nh = neighbor.get('w', 0), neighbor.get('h', 0)
-                ncx, ncy = nx + nw/2, ny + nh/2
+                ncx, ncy = nx + nw / 2, ny + nh / 2
 
                 neighbor_edges = []
                 if ncx < edge_margin: neighbor_edges.append('left')
@@ -505,11 +542,11 @@ def simple_tile_dedup(raw_particles, tile_metadata):
 
     return results
 
-
     for label, lo, hi in SIZE_BINS:
         if lo <= diameter_um < hi:
             return label
     return "K"
+
 
 def calculate_particle_size_accurate(mask_array, calibration):
     """Edge detection sizing"""
@@ -537,6 +574,7 @@ def calculate_particle_size_accurate(mask_array, calibration):
         pass
 
     return None, "failed"
+
 
 def calculate_merged_particle_size(stitched_image, calibration):
     """Recalculate size on the complete stitched image using edge detection"""
@@ -567,6 +605,7 @@ def calculate_merged_particle_size(stitched_image, calibration):
         pass
 
     return None, "failed"
+
 
 def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
     """Stitch together tiles for a merged cut particle and recalculate size"""
@@ -620,6 +659,7 @@ def stitch_merged_particle(tile_files, p, calibration=CALIBRATION_UM_PER_PIXEL):
         }, seam_position
     except:
         return None, None, None
+
 
 def detect_particles_in_tiles(tile_files, tile_metadata, model):
     """Detect in all tiles (loads from uploaded files)"""
@@ -772,6 +812,7 @@ def detect_particles_in_tiles(tile_files, tile_metadata, model):
     status.empty()
     return all_particles
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -787,8 +828,10 @@ if "tile_metadata" not in st.session_state:
 if "tile_files" not in st.session_state:
     st.session_state.tile_files = {}
 
+
 def push_undo():
     st.session_state.undo_stack.append(deepcopy(st.session_state.results))
+
 
 def display_particle_crop(pidx, p):
     """Display a single particle as a gallery thumbnail with ALL interactive features"""
@@ -812,7 +855,7 @@ def display_particle_crop(pidx, p):
         crop = tile_img_arr[y1:y2, x1:x2].copy()
         crop_pil = Image.fromarray(crop).convert('RGB')
         draw = ImageDraw.Draw(crop_pil)
-        draw.rectangle([(x-x1, y-y1), (x+w-x1, y+h-y1)], outline=(0, 100, 255), width=2)
+        draw.rectangle([(x - x1, y - y1), (x + w - x1, y + h - y1)], outline=(0, 100, 255), width=2)
 
         aspect_ratio = crop_pil.height / crop_pil.width
         new_height = int(250 * aspect_ratio)
@@ -882,7 +925,8 @@ def display_particle_crop(pidx, p):
                 push_undo()
                 st.session_state.results[pidx]["class"] = new_cls
                 # Recalculate size bin for new class
-                st.session_state.results[pidx]["size_bin"] = get_size_bin(st.session_state.results[pidx].get("diameter_um", 0))
+                st.session_state.results[pidx]["size_bin"] = get_size_bin(
+                    st.session_state.results[pidx].get("diameter_um", 0))
                 st.rerun()
 
             # DELETE BUTTON
@@ -910,6 +954,7 @@ def display_particle_crop(pidx, p):
 
     except Exception as e:
         st.error(f"❌ Display error: {str(e)[:200]}")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -995,6 +1040,27 @@ with st.sidebar:
 
                     # Summary
                     st.divider()
+
+                    # Total count row
+                    total_active = len([p for p in final_particles if not p.get("deleted") and not (
+                                p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate")])
+                    total_edge_dups = len([p for p in final_particles if
+                                           p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"])
+                    total_overlabeled = len([p for p in final_particles if
+                                             p.get("deleted") and p.get("duplicate_type") == "location_duplicate"])
+                    total_other_deleted = len([p for p in final_particles if
+                                               p.get("deleted") and p.get("duplicate_type") != "location_duplicate"])
+
+                    col_t1, col_t2, col_t3, col_t4, col_t5 = st.columns(5)
+                    col_t1.metric("Total Active", total_active)
+                    col_t2.metric("Total Edge Dups", total_edge_dups)
+                    col_t3.metric("Total Over-Labeled", total_overlabeled)
+                    col_t4.metric("Total Deleted", total_other_deleted)
+                    col_t5.metric("Grand Total", len(final_particles))
+
+                    st.divider()
+
+                    # Dedup process stats
                     col1, col2, col3, col4 = st.columns(4)
                     col1.metric("Raw Detections", len(raw_particles))
                     col2.metric("Overlaps Removed", dedup_stats['iou_removed'])
@@ -1002,9 +1068,22 @@ with st.sidebar:
                     col4.metric("Edge Duplicates Found", dedup_stats['edge_duplicates_found'])
 
                     st.success("✅ Processing complete!")
+
+                    # Send notification if enabled
+                    if st.session_state.notifications_enabled:
+                        st.markdown("""
+                        <script>
+                        window.showNotification('🐕 Predictions Ready!', {
+                            body: 'Your particle detection is complete. Check the results in the gallery.',
+                            tag: 'detection-complete',
+                            requireInteraction: true
+                        });
+                        </script>
+                        """, unsafe_allow_html=True)
                 except Exception as e:
                     st.error(f"Pipeline error: {e}")
                     import traceback
+
                     st.error(traceback.format_exc())
                     st.session_state.results = raw_particles
 
@@ -1023,7 +1102,8 @@ with st.sidebar:
             rows = []
             for p in st.session_state.results:
                 if not p.get("deleted"):
-                    status = "MERGED (stitched)" if p.get("merged") else ("AT_SEAM (check)" if p.get("at_seam") else "OK")
+                    status = "MERGED (stitched)" if p.get("merged") else (
+                        "AT_SEAM (check)" if p.get("at_seam") else "OK")
 
                     # If merged, try to get recalculated size
                     diameter_um = p["diameter_um"]
@@ -1035,7 +1115,8 @@ with st.sidebar:
                             particle_key = f"{p.get('tile_filename')}_{p.get('x')}_{p.get('y')}"
 
                             if particle_key not in st.session_state.stitch_cache:
-                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files, p)
+                                stitched, merged_meta, seam_info = stitch_merged_particle(st.session_state.tile_files,
+                                                                                          p)
                                 if merged_meta:
                                     st.session_state.stitch_cache[particle_key] = merged_meta
 
@@ -1086,25 +1167,25 @@ else:
         data[cls] = {}
         for b, _, _ in SIZE_BINS:
             count = len([p for p in st.session_state.results
-                        if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
+                         if p.get("class") == cls and p.get("size_bin") == b and not p.get("deleted")])
             data[cls][b] = count
 
     rows = []
 
+    # Add totals row
     totals_row = {"Material": "TOTAL"}
     for b, _, _ in SIZE_BINS:
         total = sum(data[cls][b] for cls in ["Fiber", "Glass", "Metallic", "Other"])
         totals_row[b] = total
     rows.append(totals_row)
-    
+
+
     for cls in ["Fiber", "Glass", "Metallic", "Other"]:
         row = {"Material": cls}
         for b, _, _ in SIZE_BINS:
             c = data[cls][b]
             row[b] = c
         rows.append(row)
-
-    # Add totals row
 
 
     df = pd.DataFrame(rows)
@@ -1143,18 +1224,13 @@ else:
         items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
 
     # Show/Hide particle types
-    col_s1, col_s2, col_s3, col_s4 = st.columns(4)
+    col_s1, col_s2, col_s3 = st.columns(3)
     with col_s1:
-        show_active = st.checkbox("Active", value=True)
+        show_edge_dups = st.checkbox("🔗 Edge Duplicates (only)", value=False)
     with col_s2:
-        show_edge_dups = st.checkbox("🔗 Edge Dups", value=True)
+        show_overlabeled = st.checkbox("🏷️ Over-Labeled (only)", value=False)
     with col_s3:
-        show_overlabeled = st.checkbox("🏷️ Over-Labeled", value=False)
-    with col_s4:
-        show_deleted = st.checkbox("❌ Deleted", value=False)
-
-    # Show filter info
-    st.caption(f"💡 **Edge Duplicates** = particles at tile seams | **Over-Labeled** = same spot, different class")
+        show_deleted = st.checkbox("❌ Deleted (only)", value=False)
 
     # Filter particles
     all_particles = []
@@ -1163,26 +1239,32 @@ else:
         total = len(st.session_state.results)
         deleted_count = len([p for p in st.session_state.results if p.get("deleted")])
         merged_count = len([p for p in st.session_state.results if p.get("merged")])
-        edge_dup_count = len([p for p in st.session_state.results if p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"])
+        edge_dup_count = len([p for p in st.session_state.results if
+                              p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"])
 
         for idx, p in enumerate(st.session_state.results):
-            # Filter by duplicate type based on checkboxes
-            is_active = not p.get("deleted") and not (p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate")
+            # Categorize particle
             is_edge_dup = p.get("is_duplicate") and p.get("duplicate_type") == "edge_duplicate"
             is_overlabeled = p.get("deleted") and p.get("duplicate_type") == "location_duplicate"
-            is_any_deleted = p.get("deleted")
+            is_deleted_only = p.get("deleted") and not is_overlabeled  # Other deleted particles
+            is_active = not p.get("deleted") and not is_edge_dup
 
-            # Check which category this particle falls into
-            include = False
-            if is_active and show_active:
-                include = True
-            elif is_edge_dup and show_edge_dups:
-                include = True
-            elif is_overlabeled and show_overlabeled:
-                include = True
-            elif is_any_deleted and show_deleted and not is_overlabeled:
-                # Show other deleted particles (not over-labeled)
-                include = True
+            # Check if any filters are active
+            any_filters_active = show_edge_dups or show_overlabeled or show_deleted
+
+            # Determine if particle should be included
+            if any_filters_active:
+                # Show only checked categories
+                include = False
+                if is_edge_dup and show_edge_dups:
+                    include = True
+                elif is_overlabeled and show_overlabeled:
+                    include = True
+                elif is_deleted_only and show_deleted:
+                    include = True
+            else:
+                # Default: show all active particles
+                include = is_active
 
             if not include:
                 continue
@@ -1241,7 +1323,7 @@ else:
                         continue
 
                     # Check if same location (within 20px)
-                    dist = ((p['x'] - kept_p['x'])**2 + (p['y'] - kept_p['y'])**2)**0.5
+                    dist = ((p['x'] - kept_p['x']) ** 2 + (p['y'] - kept_p['y']) ** 2) ** 0.5
                     if dist < 20:
                         paired_particles.append(((kept_idx, kept_p), (idx, p)))
                         seen_matches.add(kept_idx)
@@ -1249,9 +1331,11 @@ else:
                         break
 
         # Info
-        if show_edge_dups and len([p for p in paired_particles if p[0][1].get("duplicate_type") == "edge_duplicate"]) > 0:
+        if show_edge_dups and len(
+                [p for p in paired_particles if p[0][1].get("duplicate_type") == "edge_duplicate"]) > 0:
             st.info(f"✅ Showing edge duplicate pairs")
-        if show_overlabeled and len([p for p in paired_particles if p[0][1].get("duplicate_type") == "location_duplicate"]) > 0:
+        if show_overlabeled and len(
+                [p for p in paired_particles if p[0][1].get("duplicate_type") == "location_duplicate"]) > 0:
             st.info(f"✅ Showing over-labeled pairs")
 
         display_particles = paired_particles
@@ -1260,9 +1344,15 @@ else:
         display_particles = all_particles
 
     # Determine if showing pairs BEFORE using in pagination
-    is_showing_pairs = (show_edge_dups or show_overlabeled) and len(display_particles) > 0 and isinstance(display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
+    is_showing_pairs = (show_edge_dups or show_overlabeled) and len(display_particles) > 0 and isinstance(
+        display_particles[0], tuple) and isinstance(display_particles[0][0], tuple)
 
     if all_particles:
+        # Show total count at top
+        st.metric("Total Particles Displayed",
+                  len(all_particles) if not is_showing_pairs else len(display_particles) * 2)
+        st.divider()
+
         # Pagination - calculate based on what we're displaying
         if is_showing_pairs:
             # For pairs: pairs_per_page pairs = items_per_page items (2 particles per pair)
@@ -1368,7 +1458,8 @@ else:
                                     fig.add_trace(go.Image(z=tile_img, name="Image"))
                                     x, y, w, h = p.get("x", 0), p.get("y", 0), p.get("w", 0), p.get("h", 0)
                                     if x and y and w and h:
-                                        fig.add_shape(type="rect", x0=x, y0=y, x1=x+w, y1=y+h, line=dict(color="rgb(255, 100, 0)", width=2))
+                                        fig.add_shape(type="rect", x0=x, y0=y, x1=x + w, y1=y + h,
+                                                      line=dict(color="rgb(255, 100, 0)", width=2))
                                     fig.update_layout(height=600, showlegend=False, margin=dict(b=0, l=0, r=0, t=30))
                                     fig.update_xaxes(scaleanchor="y", scaleratio=1)
                                     fig.update_yaxes(scaleanchor="x", scaleratio=1)
@@ -1380,16 +1471,20 @@ else:
                                     col1, col2 = st.columns(2)
                                     with col1:
                                         st.write("**Point 1 (Start):**")
-                                        x1 = st.number_input("X₁:", min_value=0, value=int(x) if x else 0, key=f"x1_{pidx}")
-                                        y1 = st.number_input("Y₁:", min_value=0, value=int(y) if y else 0, key=f"y1_{pidx}")
+                                        x1 = st.number_input("X₁:", min_value=0, value=int(x) if x else 0,
+                                                             key=f"x1_{pidx}")
+                                        y1 = st.number_input("Y₁:", min_value=0, value=int(y) if y else 0,
+                                                             key=f"y1_{pidx}")
 
                                     with col2:
                                         st.write("**Point 2 (End):**")
-                                        x2 = st.number_input("X₂:", min_value=0, value=int(x+w) if (x and w) else 100, key=f"x2_{pidx}")
-                                        y2 = st.number_input("Y₂:", min_value=0, value=int(y+h) if (y and h) else 100, key=f"y2_{pidx}")
+                                        x2 = st.number_input("X₂:", min_value=0, value=int(x + w) if (x and w) else 100,
+                                                             key=f"x2_{pidx}")
+                                        y2 = st.number_input("Y₂:", min_value=0, value=int(y + h) if (y and h) else 100,
+                                                             key=f"y2_{pidx}")
 
                                     # Calculate distance
-                                    dist_px = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                                    dist_px = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
                                     dist_um = dist_px * CALIBRATION_UM_PER_PIXEL
 
                                     st.markdown("---")
@@ -1413,7 +1508,6 @@ else:
                                     st.error(f"❌ {str(e)[:60]}")
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)[:60]}")
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MASS EDIT / BULK OPERATIONS
