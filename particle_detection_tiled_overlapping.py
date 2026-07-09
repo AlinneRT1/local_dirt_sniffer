@@ -449,12 +449,12 @@ def simple_tile_dedup(raw_particles, tile_metadata):
 
     st.write(f"  ✅ Found {edge_dup_count} edge duplicate pairs | 🗑️ Deleted {edge_dup_deleted} (lower confidence)")
 
-    # Step 4: PARTICLE STITCHING (NEW!)
-    st.write("**Step 4: Detect particles for stitching (edge-touching)**")
+    # Step 3: PARTICLE STITCHING
+    st.write("**Step 3: Detect particles for stitching (edge-touching)**")
 
     stitch_count = 0
 
-    # Find particles that FULLY touch edges (candidates for stitching)
+    # Find particles that touch edges (candidates for stitching)
     for pidx, particle in enumerate(particles):
         if particle.get('deleted'):
             continue
@@ -468,11 +468,11 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         tile_w = particle.get('tile_width', 1024)
         tile_h = particle.get('tile_height', 1024)
 
-        # Check if particle TOUCHES edge (not just near, but actually touching)
-        touches_left = (x <= 2)  # Very close to left edge
-        touches_right = (x + w >= tile_w - 2)  # Very close to right edge
-        touches_top = (y <= 2)  # Very close to top edge
-        touches_bottom = (y + h >= tile_h - 2)  # Very close to bottom edge
+        # Check if particle TOUCHES edge (at least partially)
+        touches_left = (x <= 5)  # Close to left edge
+        touches_right = (x + w >= tile_w - 5)  # Close to right edge
+        touches_top = (y <= 5)  # Close to top edge
+        touches_bottom = (y + h >= tile_h - 5)  # Close to bottom edge
 
         edges_touched = []
         if touches_left: edges_touched.append('left')
@@ -483,7 +483,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
         if not edges_touched:
             continue
 
-        # Score against neighbors - more aggressively for stitching
+        # Score against neighbors - RELAXED criteria
         for edge in edges_touched:
             neighbor_file = neighbors_map[tile_file].get(edge)
             if not neighbor_file:
@@ -491,68 +491,69 @@ def simple_tile_dedup(raw_particles, tile_metadata):
 
             best_score = 0
             best_match = None
-            best_match_dist = 0
 
             for nidx, neighbor in enumerate(particles):
                 if neighbor.get('deleted') or neighbor.get('tile_filename') != neighbor_file:
                     continue
 
-                # For stitching, be MORE strict on class match
-                if particle.get('class') != neighbor.get('class'):
-                    continue
+                # NO class match requirement - model isn't perfect!
+                # Different classes can still be the same split particle
 
-                # Size must be very similar
+                # Size can be different (one side might be larger)
                 d1 = particle.get('diameter_um', 50)
                 d2 = neighbor.get('diameter_um', 50)
                 size_diff = abs(d1 - d2) / max(d1, d2, 1)
-                if size_diff > 0.15:  # Stricter than edge dedup
+                if size_diff > 0.5:  # Much more relaxed (was 0.15)
                     continue
 
-                # Check opposite edge - neighbor should touch opposite edge
+                # Neighbor should be near opposite edge (but not as strict)
                 n_x, n_y = neighbor.get('x', 0), neighbor.get('y', 0)
                 n_w, n_h = neighbor.get('w', 0), neighbor.get('h', 0)
+                n_tile_w = neighbor.get('tile_width', 1024)
+                n_tile_h = neighbor.get('tile_height', 1024)
 
                 opposite_edge_map = {'left': 'right', 'right': 'left', 'top': 'bottom', 'bottom': 'top'}
                 opposite = opposite_edge_map.get(edge)
 
-                neighbor_touches_opposite = False
-                if opposite == 'left' and n_x <= 2:
-                    neighbor_touches_opposite = True
-                elif opposite == 'right' and (n_x + n_w >= tile_w - 2):
-                    neighbor_touches_opposite = True
-                elif opposite == 'top' and n_y <= 2:
-                    neighbor_touches_opposite = True
-                elif opposite == 'bottom' and (n_y + n_h >= tile_h - 2):
-                    neighbor_touches_opposite = True
+                # Just check if neighbor is NEAR the opposite edge
+                neighbor_near_opposite = False
+                if opposite == 'left' and n_x <= 50:  # Much more relaxed
+                    neighbor_near_opposite = True
+                elif opposite == 'right' and (n_x + n_w >= n_tile_w - 50):
+                    neighbor_near_opposite = True
+                elif opposite == 'top' and n_y <= 50:
+                    neighbor_near_opposite = True
+                elif opposite == 'bottom' and (n_y + n_h >= n_tile_h - 50):
+                    neighbor_near_opposite = True
 
-                if not neighbor_touches_opposite:
+                if not neighbor_near_opposite:
                     continue
 
-                # Position check - perpendicular alignment
+                # Position check - perpendicular alignment (RELAXED)
                 if edge in ['left', 'right']:
-                    # Check Y alignment
+                    # Check Y alignment for horizontal stitch
                     cy1 = y + h/2
                     cy2 = n_y + n_h/2
                     y_diff = abs(cy1 - cy2)
                     max_h = max(h, n_h)
-                    pos_score = max(0, 1.0 - (y_diff / (max_h * 1.5)))
+                    pos_score = max(0, 1.0 - (y_diff / (max_h * 2.0)))  # More tolerant
                 else:
-                    # Check X alignment
+                    # Check X alignment for vertical stitch
                     cx1 = x + w/2
                     cx2 = n_x + n_w/2
                     x_diff = abs(cx1 - cx2)
                     max_w = max(w, n_w)
-                    pos_score = max(0, 1.0 - (x_diff / (max_w * 1.5)))
+                    pos_score = max(0, 1.0 - (x_diff / (max_w * 2.0)))  # More tolerant
 
-                # Class and size already matched, position matters most for stitching
+                # Position alignment is key score
                 score = pos_score
 
-                if score > best_score and score > 0.7:  # High threshold
+                if score > best_score and score > 0.4:  # Much lower threshold (was 0.7)
                     best_score = score
                     best_match = nidx
 
-            # Mark for stitching if good match
-            if best_match is not None and best_score > 0.7:
+            # Mark for stitching if match found (RELAXED threshold)
+            if best_match is not None and best_score > 0.4:  # Much lower (was 0.7)
                 particles[pidx]['merged'] = True
                 particles[pidx]['merge_type'] = 'stitched'
                 particles[pidx]['matched_stitch'] = best_match
@@ -562,7 +563,7 @@ def simple_tile_dedup(raw_particles, tile_metadata):
                 break
 
     st.write(f"  ✅ Found {stitch_count} particles ready for stitching")
-    st.write("**Step 3: Over-labeling detection (same spot, different class)**")
+    st.write("**Step 4: Over-labeling detection (same spot, different class)**")
 
     overlabel_removed = 0
 
@@ -1040,12 +1041,143 @@ if "tile_metadata" not in st.session_state:
 if "tile_files" not in st.session_state:
     st.session_state.tile_files = {}
 
-def push_undo():
+def create_stitched_preview(tile_files, p1, p2, stitch_edge):
+    """
+    Stitch two tile images together and show particle + seam
+
+    Args:
+        tile_files: dict of {filename: file_obj}
+        p1: particle dict from current tile
+        p2: particle dict from neighbor tile
+        stitch_edge: 'left', 'right', 'top', or 'bottom'
+
+    Returns:
+        stitched_img: numpy array of stitched image with seam marked and particle boxed
+    """
+    try:
+        # Load both tile images
+        file1 = tile_files.get(p1.get('tile_filename'))
+        file2 = tile_files.get(p2.get('tile_filename'))
+
+        if not file1 or not file2:
+            return None
+
+        img1 = Image.open(file1).convert('RGB')
+        img2 = Image.open(file2).convert('RGB')
+
+        img1 = np.array(img1)
+        img2 = np.array(img2)
+
+        # Determine stitch direction and create combined image
+        if stitch_edge in ['left', 'right']:
+            # Horizontal stitch - place side by side
+            if stitch_edge == 'left':
+                # p1 touches LEFT edge, neighbor is to the LEFT (img2)
+                # So stitch should be: img2 (left) + img1 (right)
+                stitched = np.hstack([img2, img1])
+                seam_x = img2.shape[1]  # Seam at boundary
+                offset_x = img2.shape[1]  # p1 is offset by img2 width (to the right)
+                offset_y = 0
+            else:  # right
+                # p1 touches RIGHT edge, neighbor is to the RIGHT (img2)
+                # So stitch should be: img1 (left) + img2 (right)
+                stitched = np.hstack([img1, img2])
+                seam_x = img1.shape[1]  # Seam at boundary
+                offset_x = 0  # p1 stays on left
+                offset_y = 0
+        else:
+            # Vertical stitch - place top/bottom
+            if stitch_edge == 'top':
+                # p1 touches TOP edge, neighbor is ABOVE (img2)
+                # So stitch should be: img2 (above) + img1 (current)
+                stitched = np.vstack([img2, img1])
+                seam_y = img2.shape[0]  # Seam at boundary between them
+                offset_x = 0
+                offset_y = img2.shape[0]  # p1 is offset by img2 height (below img2)
+            else:  # bottom
+                # p1 touches BOTTOM edge, neighbor is BELOW (img2)
+                # So stitch should be: img1 (current) + img2 (below)
+                stitched = np.vstack([img1, img2])
+                seam_y = img1.shape[0]  # Seam at boundary between them
+                offset_x = 0
+                offset_y = 0  # p1 stays at top
+
+        # Draw seam in red
+        if stitch_edge in ['left', 'right']:
+            stitched[0:stitched.shape[0], seam_x-2:seam_x+2] = [255, 0, 0]  # Red seam
+        else:
+            stitched[seam_y-2:seam_y+2, 0:stitched.shape[1]] = [255, 0, 0]  # Red seam
+
+        # Draw box around p1 particle
+        x1, y1, w1, h1 = p1.get('x', 0), p1.get('y', 0), p1.get('w', 0), p1.get('h', 0)
+        x1_stitched = int(x1 + offset_x)
+        y1_stitched = int(y1 + offset_y)
+
+        # Orange box for p1
+        cv2.rectangle(stitched,
+                     (int(x1_stitched), int(y1_stitched)),
+                     (int(x1_stitched + w1), int(y1_stitched + h1)),
+                     (255, 165, 0), 2)  # Orange
+
+        # Draw lighter box around p2 particle (for reference)
+        x2, y2, w2, h2 = p2.get('x', 0), p2.get('y', 0), p2.get('w', 0), p2.get('h', 0)
+        if stitch_edge == 'left':
+            # p2 is in img2 which is on the left (offset 0)
+            x2_stitched = int(x2)
+            y2_stitched = int(y2)
+        elif stitch_edge == 'right':
+            # p2 is in img2 which is on the right (offset img1.shape[1])
+            x2_stitched = int(x2 + img1.shape[1])
+            y2_stitched = int(y2)
+        elif stitch_edge == 'top':
+            # p2 is in img2 which is on top (offset 0)
+            x2_stitched = int(x2)
+            y2_stitched = int(y2)
+        else:  # bottom
+            # p2 is in img2 which is on bottom (offset img1.shape[0])
+            x2_stitched = int(x2)
+            y2_stitched = int(y2 + img1.shape[0])
+
+        # Light yellow box for p2
+        cv2.rectangle(stitched,
+                     (int(x2_stitched), int(y2_stitched)),
+                     (int(x2_stitched + w2), int(y2_stitched + h2)),
+                     (255, 255, 100), 1)  # Light yellow (thinner)
+
+        return stitched
+
+    except Exception as e:
+        st.error(f"❌ Stitch error: {str(e)[:100]}")
+        return None
+
+
     st.session_state.undo_stack.append(deepcopy(st.session_state.results))
 
 def display_particle_crop(pidx, p):
     """Display a single particle as a gallery thumbnail with ALL interactive features"""
     try:
+        # Check if this is a merged particle - show stitched preview
+        if p.get("merged") and p.get("matched_stitch") is not None:
+            matched_idx = p.get("matched_stitch")
+            if matched_idx < len(st.session_state.results):
+                p2 = st.session_state.results[matched_idx]
+                stitch_edge = p.get("stitch_edge")
+
+                stitched_img = create_stitched_preview(st.session_state.tile_files, p, p2, stitch_edge)
+                if stitched_img is not None:
+                    # Resize for display
+                    h, w = stitched_img.shape[0], stitched_img.shape[1]
+                    aspect_ratio = h / w
+                    new_height = int(250 * aspect_ratio)
+                    stitched_pil = Image.fromarray(stitched_img.astype('uint8')).resize((250, new_height), Image.Resampling.LANCZOS)
+                    st.image(stitched_pil)
+
+                    # Caption for merged particle
+                    caption = f"🔀 MERGED - {stitch_edge.upper()}\n{p.get('class', '?')} | {p.get('size_bin', '?')}\n{p.get('diameter_um', '?'):.1f}µm\nScore: {p.get('stitch_score', 0):.3f}"
+                    st.caption(caption)
+                    return
+
+        # Normal single particle display
         filename = p.get("tile_filename")
         if not filename or filename not in st.session_state.tile_files:
             st.warning("❌ Tile missing")
@@ -1754,11 +1886,41 @@ else:
                         with st.expander(f"📸 {filename} - Particle #{pidx}", expanded=True):
                             st.markdown("---")
                             try:
+                                # Check if this is a merged particle - show stitched image
+                                if p.get("merged") and p.get("matched_stitch") is not None:
+                                    matched_idx = p.get("matched_stitch")
+                                    if matched_idx < len(st.session_state.results):
+                                        p2 = st.session_state.results[matched_idx]
+                                        stitch_edge = p.get("stitch_edge")
+
+                                        st.subheader(f"🔀 Stitched Particle Preview - {stitch_edge.upper()} Edge")
+
+                                        stitched_img = create_stitched_preview(st.session_state.tile_files, p, p2, stitch_edge)
+                                        if stitched_img is not None:
+                                            fig = go.Figure()
+                                            fig.add_trace(go.Image(z=stitched_img, name="Stitched"))
+                                            fig.update_layout(height=600, showlegend=False, margin=dict(b=0, l=0, r=0, t=30))
+                                            fig.update_xaxes(scaleanchor="y", scaleratio=1)
+                                            fig.update_yaxes(scaleanchor="x", scaleratio=1)
+                                            st.plotly_chart(fig, use_container_width=True)
+
+                                            st.info(f"""
+                                            **Stitch Details:**
+                                            - Edge: {stitch_edge.upper()}
+                                            - Stitch Score: {p.get('stitch_score', 0):.3f}
+                                            - Partner Particle Index: {matched_idx}
+                                            - Orange Box: This particle
+                                            - Light Yellow Box: Partner particle
+                                            - Red Line: Seam between tiles
+                                            """)
+                                        st.markdown("---")
+
                                 file_obj = st.session_state.tile_files[filename]
                                 tile_img = Image.open(file_obj).convert('RGB')
                                 tile_img = np.array(tile_img)
 
-                                # Show image with particle bbox
+                                # Show single tile with particle bbox
+                                st.subheader("📸 Original Tile")
                                 fig = go.Figure()
                                 fig.add_trace(go.Image(z=tile_img, name="Image"))
                                 x, y, w, h = p.get("x", 0), p.get("y", 0), p.get("w", 0), p.get("h", 0)
