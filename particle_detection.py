@@ -1594,12 +1594,6 @@ else:
             data[cls][b] = count
 
     rows = []
-    for cls in ["Fiber", "Glass", "Metallic", "Other"]:
-        row = {"Material": cls}
-        for b, _, _ in SIZE_BINS:
-            c = data[cls][b]
-            row[b] = c
-        rows.append(row)
 
     # Add totals row
     totals_row = {"Material": "TOTAL"}
@@ -1607,6 +1601,13 @@ else:
         total = sum(data[cls][b] for cls in ["Fiber", "Glass", "Metallic", "Other"])
         totals_row[b] = total
     rows.append(totals_row)
+
+    for cls in ["Fiber", "Glass", "Metallic", "Other"]:
+        row = {"Material": cls}
+        for b, _, _ in SIZE_BINS:
+            c = data[cls][b]
+            row[b] = c
+        rows.append(row)
 
     df = pd.DataFrame(rows)
     st.dataframe(df, width='stretch', height=200)
@@ -1641,7 +1642,7 @@ else:
 
     st.divider()
 
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         filter_class = st.multiselect(
             "Class:",
@@ -1657,12 +1658,8 @@ else:
             key="fb"
         )
     with col3:
-        show_seams_only = st.checkbox("Seams only")
-    with col4:
-        show_merged_only = st.checkbox("Merged only")
-    with col5:
         sort_by = st.selectbox("Sort:", ["Confidence ↓", "Confidence ↑", "Size ↓", "Size ↑"], index=0)
-    with col6:
+    with 4:
         items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
 
     # Show/Hide particle types
@@ -1719,11 +1716,6 @@ else:
 
             # Apply class/size filters to ALL particles
             if p.get("class") not in filter_class or p.get("size_bin") not in filter_bins:
-                continue
-
-            if show_seams_only and not p.get("at_seam"):
-                continue
-            if show_merged_only and not p.get("merged"):
                 continue
 
             all_particles.append((idx, p))
