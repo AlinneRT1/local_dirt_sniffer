@@ -1659,7 +1659,7 @@ else:
         )
     with col3:
         sort_by = st.selectbox("Sort:", ["Confidence ↓", "Confidence ↑", "Size ↓", "Size ↑"], index=0)
-    with 4:
+    with col4:
         items_per_page = st.selectbox("Per page:", [12, 18, 24, 36], index=0)
 
     # Show/Hide particle types
